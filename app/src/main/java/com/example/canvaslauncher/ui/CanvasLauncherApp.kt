@@ -1037,7 +1037,7 @@ fun CanvasLauncherApp(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             "App raggruppate in questa sessione:",
-                            color = Color = Color(0xFF94A3B8),
+                            color = Color(0xFF94A3B8),
                             fontSize = 13.sp
                         )
                         session.sessionPackages.forEach { pkg ->
