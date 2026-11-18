@@ -6,14 +6,14 @@ plugins {
 
 android {
     namespace = "com.example.canvaslauncher"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.canvaslauncher"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 35
+        versionCode = 2
+        versionName = "2.0"
     }
 
     buildTypes {
