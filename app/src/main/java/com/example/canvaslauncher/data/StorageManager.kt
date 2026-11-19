@@ -17,6 +17,21 @@ enum class StatusBarMode(val label: String) {
     HIDDEN("Nascosta")
 }
 
+data class CanvasWaypoint(
+    val id: String,
+    val name: String,
+    val offsetX: Float,
+    val offsetY: Float,
+    val zoomScale: Float
+)
+
+data class WebQuickPreset(
+    val id: String,
+    val name: String,
+    val url: String,
+    val browserPackage: String? = null
+)
+
 object StorageManager {
     private const val PREFS_NAME = "canvas_launcher_prefs"
     private const val KEY_ITEMS = "saved_canvas_items"
@@ -25,6 +40,10 @@ object StorageManager {
     private const val KEY_DEFAULT_COLOR = "default_element_color"
     private const val KEY_STATUS_BAR_MODE = "status_bar_mode"
     private const val KEY_SHOW_SELF_IN_DRAWER = "show_self_in_drawer"
+    private const val KEY_DRAWER_HAPTIC_STRENGTH = "drawer_haptic_strength"
+    private const val KEY_WAYPOINTS = "saved_canvas_waypoints"
+    private const val KEY_WEB_PRESETS = "saved_web_quick_presets"
+    private const val KEY_WEB_PRESETS_SEEDED = "web_presets_seeded_v1"
     private const val KEY_GUIDE_SEEDED = "has_seeded_guide_v4"
 
     fun saveItems(context: Context, items: List<CanvasItem>) {
@@ -40,6 +59,8 @@ object StorageManager {
                 put("fileUri", item.fileUri ?: "")
                 put("fileMimeType", item.fileMimeType ?: "")
                 put("url", item.url ?: "")
+                put("browserPackage", item.browserPackage ?: "")
+                put("adBlockEnabled", item.adBlockEnabled)
                 put("lastSnapshotPath", item.lastSnapshotPath ?: "")
                 put("imeFallbackDisplay", item.imeFallbackDisplay)
                 put("appWidgetId", item.appWidgetId)
@@ -106,6 +127,8 @@ object StorageManager {
                         fileUri = obj.optString("fileUri").takeIf { it.isNotEmpty() },
                         fileMimeType = obj.optString("fileMimeType").takeIf { it.isNotEmpty() },
                         url = obj.optString("url").takeIf { it.isNotEmpty() },
+                        browserPackage = obj.optString("browserPackage").takeIf { it.isNotEmpty() },
+                        adBlockEnabled = obj.optBoolean("adBlockEnabled", true),
                         lastSnapshotPath = obj.optString("lastSnapshotPath").takeIf { it.isNotEmpty() },
                         imeFallbackDisplay = obj.optBoolean("imeFallbackDisplay", true),
                         appWidgetId = obj.optInt("appWidgetId", -1),
@@ -127,15 +150,108 @@ object StorageManager {
         return result
     }
 
+    // --- COORDINATE SALVATE (WAYPOINTS) ---
+    fun loadWaypoints(context: Context): List<CanvasWaypoint> {
+        val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_WAYPOINTS, null) ?: return emptyList()
+        val list = mutableListOf<CanvasWaypoint>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    CanvasWaypoint(
+                        id = o.getString("id"),
+                        name = o.getString("name"),
+                        offsetX = o.getDouble("offsetX").toFloat(),
+                        offsetY = o.getDouble("offsetY").toFloat(),
+                        zoomScale = o.optDouble("zoomScale", 1.0).toFloat()
+                    )
+                )
+            }
+        } catch (_: Exception) {
+        }
+        return list
+    }
+
+    fun saveWaypoints(context: Context, waypoints: List<CanvasWaypoint>) {
+        val arr = JSONArray()
+        for (wp in waypoints) {
+            arr.put(
+                JSONObject().apply {
+                    put("id", wp.id)
+                    put("name", wp.name)
+                    put("offsetX", wp.offsetX.toDouble())
+                    put("offsetY", wp.offsetY.toDouble())
+                    put("zoomScale", wp.zoomScale.toDouble())
+                }
+            )
+        }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(KEY_WAYPOINTS, arr.toString()).apply()
+    }
+
+    // --- OPZIONI RAPIDE WEB APP PERSONALIZZABILI ---
+    fun loadWebQuickPresets(context: Context): List<WebQuickPreset> {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_WEB_PRESETS, null)
+        if (raw == null && !prefs.getBoolean(KEY_WEB_PRESETS_SEEDED, false)) {
+            val defaults = listOf(
+                WebQuickPreset(UUID.randomUUID().toString(), "YouTube", "https://m.youtube.com"),
+                WebQuickPreset(UUID.randomUUID().toString(), "ChatGPT", "https://chatgpt.com"),
+                WebQuickPreset(UUID.randomUUID().toString(), "Google Docs", "https://docs.google.com"),
+                WebQuickPreset(UUID.randomUUID().toString(), "Wikipedia", "https://it.m.wikipedia.org"),
+                WebQuickPreset(UUID.randomUUID().toString(), "Google", "https://www.google.com")
+            )
+            prefs.edit().putBoolean(KEY_WEB_PRESETS_SEEDED, true).apply()
+            saveWebQuickPresets(context, defaults)
+            return defaults
+        }
+        if (raw == null) return emptyList()
+        val list = mutableListOf<WebQuickPreset>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    WebQuickPreset(
+                        id = o.getString("id"),
+                        name = o.getString("name"),
+                        url = o.getString("url"),
+                        browserPackage = o.optString("browserPackage").takeIf { it.isNotEmpty() }
+                    )
+                )
+            }
+        } catch (_: Exception) {
+        }
+        return list
+    }
+
+    fun saveWebQuickPresets(context: Context, presets: List<WebQuickPreset>) {
+        val arr = JSONArray()
+        for (p in presets) {
+            arr.put(
+                JSONObject().apply {
+                    put("id", p.id)
+                    put("name", p.name)
+                    put("url", p.url)
+                    put("browserPackage", p.browserPackage ?: "")
+                }
+            )
+        }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(KEY_WEB_PRESETS, arr.toString()).apply()
+    }
+
     fun createDefaultGuideNote(x: Float = 55f, y: Float = 135f): CanvasItem {
         return CanvasItem(
             id = "guide_note_${UUID.randomUUID()}",
             title = "Guida Desktop Spaziale",
             content = """
-                • STILE DESKTOP: Icone, file, widget, foto e note vivono direttamente sulla tela senza box, con il nome sotto.
-                • FINESTRE APP & WEB APP: Tieni premuto un'app nel menu e scegli 'Apri in Finestra sulla Tela' (usa VirtualDisplay + Shizuku, oppure Freeform automatico se Shizuku è spento). Puoi anche aprire Web App live sulla tela.
-                • DOPO UN RIAVVIO: Ogni finestra salva automaticamente uno screenshot del punto in cui eri arrivato.
-                • RIDIMENSIONA TUTTO: Tieni premuto su qualsiasi elemento o finestra e scegli 'Ridimensiona' per trascinare gli angoli.
+                • NAVIGAZIONE LIBERA: Scorri liberamente dentro le Web App e le App; trascina la barra titolo per spostare la finestra oppure usa 'Usa' per bloccare la tela.
+                • COORDINATE & SEGNALIBRI: Tocca il mirino a sinistra per tornare a (0,0), oppure tienilo premuto per salvare la posizione corrente e saltare tra i luoghi salvati.
+                • WEB APP & BROWSER: Usa il motore interno con AdBlock stile Brave oppure scegli un browser installato sul telefono.
+                • RIDIMENSIONA TUTTO: Tieni premuto su qualsiasi elemento o finestra e scegli 'Ridimensiona'.
             """.trimIndent(),
             x = x,
             y = y,
@@ -162,6 +278,15 @@ object StorageManager {
     fun setDrawerAlpha(context: Context, alpha: Float) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putFloat(KEY_DRAWER_ALPHA, alpha.coerceIn(0.2f, 1f)).apply()
+    }
+
+    fun getDrawerHapticStrength(context: Context): Float =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getFloat(KEY_DRAWER_HAPTIC_STRENGTH, 0.55f)
+
+    fun setDrawerHapticStrength(context: Context, strength: Float) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putFloat(KEY_DRAWER_HAPTIC_STRENGTH, strength.coerceIn(0f, 1f)).apply()
     }
 
     fun getDefaultElementColor(context: Context): Long =
