@@ -26,6 +26,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -164,7 +165,6 @@ fun CanvasLauncherApp(
     val context = LocalContext.current
     val density = LocalDensity.current
 
-    // Stato Shizuku aggiornato in tempo reale tramite listener dedicati
     var liveShizukuReady by remember(shizukuReady) {
         mutableStateOf(shizukuReady || VirtualDisplayWindowManager.isShizukuReady())
     }
@@ -578,7 +578,6 @@ fun CanvasLauncherApp(
         StorageManager.saveItems(context, items)
     }
 
-    // CONTENITORE PRINCIPALE SENZA GESTURE BLOCCANTI SUL PADRE
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -588,7 +587,7 @@ fun CanvasLauncherApp(
             }
             .background(Color(0xFF0C0E14).copy(alpha = backgroundAlpha))
     ) {
-        // LIVELLO 1: SFONDO + GESTURE PAN/ZOOM TELA (NON BLOCCA I BOTTONI O LE FINESTRE SOPRA)
+        // LIVELLO 1: SFONDO + GESTURE PAN/ZOOM TELA
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -750,7 +749,6 @@ fun CanvasLauncherApp(
                                     .background(Color(0xFF141822))
                                     .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp))
                             ) {
-                                // Barra titolo trascinabile
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
@@ -972,7 +970,6 @@ fun CanvasLauncherApp(
                                     .background(Color(0xFF141822))
                                     .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp))
                             ) {
-                                // Barra titolo trascinabile
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
@@ -1211,7 +1208,9 @@ fun CanvasLauncherApp(
 
                         ItemType.SYSTEM_WIDGET -> {
                             val widgetInfo = remember(item.appWidgetId) {
-                                if (item.appWidgetId != -1) appWidgetManager.getAppWidgetInfo(item.appWidgetId) else null
+                                if (item.appWidgetId != -1) {
+                                    runCatching { appWidgetManager.getAppWidgetInfo(item.appWidgetId) }.getOrNull()
+                                } else null
                             }
                             Box(
                                 modifier = Modifier
@@ -1228,8 +1227,15 @@ fun CanvasLauncherApp(
                                 if (widgetInfo != null) {
                                     AndroidView(
                                         factory = { ctx ->
-                                            appWidgetHost.createView(ctx, item.appWidgetId, widgetInfo).apply {
-                                                setAppWidget(item.appWidgetId, widgetInfo)
+                                            runCatching {
+                                                appWidgetHost.createView(ctx, item.appWidgetId, widgetInfo).apply {
+                                                    setAppWidget(item.appWidgetId, widgetInfo)
+                                                }
+                                            }.getOrElse {
+                                                TextView(ctx).apply {
+                                                    text = item.title
+                                                    setTextColor(android.graphics.Color.WHITE)
+                                                }
                                             }
                                         },
                                         modifier = Modifier.fillMaxSize()
@@ -1470,7 +1476,7 @@ fun CanvasLauncherApp(
             }
         }
 
-        // LIVELLO 3: STRUMENTO LAZO (SOLO QUANDO ATTIVO)
+        // LIVELLO 3: STRUMENTO LAZO
         if (activeTool == CanvasTool.LASSO) {
             Canvas(
                 modifier = Modifier
@@ -1573,7 +1579,7 @@ fun CanvasLauncherApp(
             }
         }
 
-        // LIVELLO 5: BARRA STRUMENTI INFERIORE (INDIPENDENTE E SEMPRE CLICCABILE)
+        // LIVELLO 5: BARRA STRUMENTI INFERIORE
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1591,7 +1597,6 @@ fun CanvasLauncherApp(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Tasto (0,0) prima di tutti di fianco a "Tela"
                 Box {
                     Box(
                         modifier = Modifier
@@ -2085,16 +2090,16 @@ private fun normalizeWebUrl(rawUrl: String): String {
     }
 }
 
-private fun queryInstalledBrowsers(context: Context): List<InstalledBrowserInfo> {
+private fun queryInstalledBrowsers(context: Context): List<InstalledBrowserInfo> = runCatching {
     val pm = context.packageManager
     val resolved = pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com")), PackageManager.MATCH_ALL)
     val seen = mutableSetOf<String>()
-    return resolved.mapNotNull { info ->
+    resolved.mapNotNull { info ->
         val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
         if (pkg == context.packageName || !seen.add(pkg)) return@mapNotNull null
         InstalledBrowserInfo(info.loadLabel(pm).toString(), pkg, info.loadIcon(pm))
     }.sortedBy { it.label.lowercase() }
-}
+}.getOrDefault(emptyList())
 
 private fun cleanupItemResources(item: CanvasItem, appWidgetHost: AppWidgetHost) {
     if (item.appWidgetId != -1) runCatching { appWidgetHost.deleteAppWidgetId(item.appWidgetId) }
