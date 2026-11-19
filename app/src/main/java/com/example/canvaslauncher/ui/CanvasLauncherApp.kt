@@ -49,6 +49,7 @@ import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
@@ -69,7 +70,6 @@ import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SettingsApplications
-import androidx.compose.material.icons.rounded.Shortcut
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material.icons.rounded.Widgets
@@ -1892,7 +1892,7 @@ fun CanvasLauncherApp(
                 )
 
                 DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Rounded.Shortcut, null, tint = Color(0xFFFB923C)) },
+                    leadingIcon = { Icon(Icons.Rounded.Bolt, null, tint = Color(0xFFFB923C)) },
                     text = { Text("Aggiungi Scorciatoia di Sistema", color = Color.White) },
                     onClick = {
                         showContextMenu = false
