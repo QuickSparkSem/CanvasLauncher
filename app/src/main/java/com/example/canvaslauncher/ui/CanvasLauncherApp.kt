@@ -103,8 +103,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -132,6 +130,7 @@ import com.example.canvaslauncher.model.CanvasItem
 import com.example.canvaslauncher.model.ItemType
 import com.example.canvaslauncher.shizuku.VirtualDisplayWindowManager
 import com.example.canvaslauncher.web.AdBlockerEngine
+import rikka.shizuku.Shizuku
 import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -165,35 +164,51 @@ fun CanvasLauncherApp(
     val context = LocalContext.current
     val density = LocalDensity.current
 
+    // Stato Shizuku aggiornato in tempo reale tramite listener dedicati
+    var liveShizukuReady by remember(shizukuReady) {
+        mutableStateOf(shizukuReady || VirtualDisplayWindowManager.isShizukuReady())
+    }
+    DisposableEffect(Unit) {
+        val binderListener = Shizuku.OnBinderReceivedListener {
+            liveShizukuReady = VirtualDisplayWindowManager.isShizukuReady()
+        }
+        val deadListener = Shizuku.OnBinderDeadListener {
+            liveShizukuReady = false
+        }
+        val permListener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->
+            liveShizukuReady = grantResult == PackageManager.PERMISSION_GRANTED
+        }
+        runCatching {
+            Shizuku.addBinderReceivedListenerSticky(binderListener)
+            Shizuku.addBinderDeadListener(deadListener)
+            Shizuku.addRequestPermissionResultListener(permListener)
+        }
+        onDispose {
+            runCatching {
+                Shizuku.removeBinderReceivedListener(binderListener)
+                Shizuku.removeBinderDeadListener(deadListener)
+                Shizuku.removeRequestPermissionResultListener(permListener)
+            }
+        }
+    }
+
     var showAppDrawer by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showPhotoChoiceDialog by remember { mutableStateOf(false) }
     var showAudioDialog by remember { mutableStateOf(false) }
     var showWebAppDialog by remember { mutableStateOf(false) }
 
-    // Coordinate salvate (Waypoints) & Menu pressione prolungata sul tasto (0,0)
     val savedWaypoints = remember {
-        mutableStateListOf<CanvasWaypoint>().apply {
-            addAll(StorageManager.loadWaypoints(context))
-        }
+        mutableStateListOf<CanvasWaypoint>().apply { addAll(StorageManager.loadWaypoints(context)) }
     }
     var showWaypointsMenu by remember { mutableStateOf(false) }
     var showSaveWaypointDialog by remember { mutableStateOf(false) }
     var newWaypointName by remember { mutableStateOf("") }
 
-    // Opzioni rapide Web App personalizzabili
     val webQuickPresets = remember {
-        mutableStateListOf<WebQuickPreset>().apply {
-            addAll(StorageManager.loadWebQuickPresets(context))
-        }
+        mutableStateListOf<WebQuickPreset>().apply { addAll(StorageManager.loadWebQuickPresets(context)) }
     }
-
-    // Browser esterni installati sul telefono
-    val installedBrowsers = remember {
-        queryInstalledBrowsers(context)
-    }
-
-    // Conteggio annunci bloccati per ciascuna WebView
+    val installedBrowsers = remember { queryInstalledBrowsers(context) }
     val adBlockedCounts = remember { mutableStateMapOf<String, Int>() }
 
     var resizingItemId by remember { mutableStateOf<String?>(null) }
@@ -217,20 +232,15 @@ fun CanvasLauncherApp(
     var hapticStrength by remember { mutableFloatStateOf(StorageManager.getDrawerHapticStrength(context)) }
     var statusBarMode by remember { mutableStateOf(StorageManager.getStatusBarMode(context)) }
     var showSelfInDrawer by remember { mutableStateOf(StorageManager.getShowSelfInDrawer(context)) }
-    var defaultElementColor by remember { mutableLongStateOf(StorageManager.getDefaultElementColor(context)) }
 
     var activeTool by remember { mutableStateOf(CanvasTool.PAN) }
-
-    // Stato Telecamera 2D e dimensioni viewport
     var cameraOffset by remember { mutableStateOf(Offset.Zero) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var viewportWidthPx by remember { mutableFloatStateOf(1080f) }
     var viewportHeightPx by remember { mutableFloatStateOf(2200f) }
 
-    var cursorPos by remember { mutableStateOf(Offset(360f, 560f)) }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
     val selectedIds = remember { mutableStateListOf<String>() }
-    var isDraggingSelected by remember { mutableStateOf(false) }
 
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuScreenPos by remember { mutableStateOf(Offset.Zero) }
@@ -239,37 +249,26 @@ fun CanvasLauncherApp(
     var editingItem by remember { mutableStateOf<CanvasItem?>(null) }
     var editTitleText by remember { mutableStateOf("") }
     var editContentText by remember { mutableStateOf("") }
-    var editColorHex by remember { mutableLongStateOf(defaultElementColor) }
+    var editColorHex by remember { mutableLongStateOf(0x00000000L) }
 
     var activeSessionDialogItem by remember { mutableStateOf<CanvasItem?>(null) }
-
-    // Riproduzione Audio
     var playingAudioId by remember { mutableStateOf<String?>(null) }
     val activePlayer = remember { mutableStateOf<MediaPlayer?>(null) }
 
     DisposableEffect(Unit) {
-        onDispose {
-            try {
-                activePlayer.value?.release()
-            } catch (_: Exception) {
-            }
-        }
+        onDispose { runCatching { activePlayer.value?.release() } }
     }
 
     fun toggleAudioPlayback(item: CanvasItem) {
         val path = item.audioPath ?: return
         if (playingAudioId == item.id) {
-            try {
-                activePlayer.value?.stop()
-                activePlayer.value?.release()
-            } catch (_: Exception) {
-            }
+            runCatching { activePlayer.value?.stop(); activePlayer.value?.release() }
             activePlayer.value = null
             playingAudioId = null
         } else {
-            try {
+            runCatching {
                 activePlayer.value?.release()
-                val player = MediaPlayer().apply {
+                activePlayer.value = MediaPlayer().apply {
                     setDataSource(path)
                     prepare()
                     start()
@@ -279,9 +278,8 @@ fun CanvasLauncherApp(
                         activePlayer.value = null
                     }
                 }
-                activePlayer.value = player
                 playingAudioId = item.id
-            } catch (_: Exception) {
+            }.onFailure {
                 Toast.makeText(context, "Impossibile riprodurre l'audio", Toast.LENGTH_SHORT).show()
             }
         }
@@ -328,14 +326,7 @@ fun CanvasLauncherApp(
         browserPackage: String?,
         adBlockEnabled: Boolean = true
     ) {
-        val normalizedUrl = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
-            rawUrl
-        } else if (rawUrl.contains(".") && !rawUrl.contains(" ")) {
-            "https://$rawUrl"
-        } else {
-            "https://www.google.com/search?q=${Uri.encode(rawUrl)}"
-        }
-
+        val normalizedUrl = normalizeWebUrl(rawUrl)
         val worldX = (-cameraOffset.x + 80f) / zoomScale
         val worldY = (-cameraOffset.y + 180f) / zoomScale
         val winWidthDp = 315f
@@ -362,8 +353,6 @@ fun CanvasLauncherApp(
         items.add(newItem)
         StorageManager.saveItems(context, items)
 
-        // Se l'utente ha scelto un browser esterno specifico (es. Brave/Chrome) e Shizuku è attivo,
-        // avvia quel browser direttamente nel VirtualDisplay della finestra sulla tela!
         if (!browserPackage.isNullOrBlank() && VirtualDisplayWindowManager.isShizukuReady()) {
             val wPx = (winWidthDp * density.density).roundToInt()
             val hPx = ((winHeightDp - 36f) * density.density).roundToInt()
@@ -382,21 +371,17 @@ fun CanvasLauncherApp(
     val galleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        if (uri != null) {
-            val savedPath = StorageManager.copyUriToInternalStorage(context, uri, "snapshots", "jpg")
-            if (savedPath != null) {
-                val worldX = (-cameraOffset.x + 180f) / zoomScale
-                val worldY = (-cameraOffset.y + 300f) / zoomScale
+        uri?.let {
+            StorageManager.copyUriToInternalStorage(context, it, "snapshots", "jpg")?.let { savedPath ->
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
                         title = "Foto",
                         imagePath = savedPath,
-                        x = worldX,
-                        y = worldY,
+                        x = (-cameraOffset.x + 180f) / zoomScale,
+                        y = (-cameraOffset.y + 300f) / zoomScale,
                         widthDp = 190f,
                         heightDp = 175f,
-                        colorHex = 0x00000000L,
                         type = ItemType.IMAGE_SNAPSHOT
                     )
                 )
@@ -408,23 +393,19 @@ fun CanvasLauncherApp(
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
-    ) { success: Boolean ->
+    ) { success ->
         val uri = pendingCameraUri
         if (success && uri != null) {
-            val savedPath = StorageManager.copyUriToInternalStorage(context, uri, "snapshots", "jpg")
-            if (savedPath != null) {
-                val worldX = (-cameraOffset.x + 180f) / zoomScale
-                val worldY = (-cameraOffset.y + 300f) / zoomScale
+            StorageManager.copyUriToInternalStorage(context, uri, "snapshots", "jpg")?.let { savedPath ->
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
                         title = "Scatto",
                         imagePath = savedPath,
-                        x = worldX,
-                        y = worldY,
+                        x = (-cameraOffset.x + 180f) / zoomScale,
+                        y = (-cameraOffset.y + 300f) / zoomScale,
                         widthDp = 190f,
                         heightDp = 175f,
-                        colorHex = 0x00000000L,
                         type = ItemType.IMAGE_SNAPSHOT
                     )
                 )
@@ -447,9 +428,7 @@ fun CanvasLauncherApp(
     }
 
     fun launchQuickCamera() {
-        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-            PackageManager.PERMISSION_GRANTED
-        if (granted) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             val tempFile = File(context.cacheDir, "cam_${UUID.randomUUID()}.jpg")
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
             pendingCameraUri = uri
@@ -462,22 +441,18 @@ fun CanvasLauncherApp(
     val audioFilePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        if (uri != null) {
-            val name = StorageManager.getDisplayNameFromUri(context, uri)
-            val savedPath = StorageManager.copyUriToInternalStorage(context, uri, "audio_memos", "m4a")
-            if (savedPath != null) {
-                val worldX = (-cameraOffset.x + 180f) / zoomScale
-                val worldY = (-cameraOffset.y + 300f) / zoomScale
+        uri?.let {
+            val name = StorageManager.getDisplayNameFromUri(context, it)
+            StorageManager.copyUriToInternalStorage(context, it, "audio_memos", "m4a")?.let { savedPath ->
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
                         title = name,
                         audioPath = savedPath,
-                        x = worldX,
-                        y = worldY,
+                        x = (-cameraOffset.x + 180f) / zoomScale,
+                        y = (-cameraOffset.y + 300f) / zoomScale,
                         widthDp = 115f,
                         heightDp = 105f,
-                        colorHex = 0x00000000L,
                         type = ItemType.AUDIO_MEMO
                     )
                 )
@@ -489,29 +464,20 @@ fun CanvasLauncherApp(
     val fileLinkPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: Exception) {
+        uri?.let {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            val displayName = StorageManager.getDisplayNameFromUri(context, uri)
-            val mimeType = context.contentResolver.getType(uri) ?: "*/*"
-            val worldX = (-cameraOffset.x + 180f) / zoomScale
-            val worldY = (-cameraOffset.y + 300f) / zoomScale
             items.add(
                 CanvasItem(
                     id = UUID.randomUUID().toString(),
-                    title = displayName,
-                    fileUri = uri.toString(),
-                    fileMimeType = mimeType,
-                    x = worldX,
-                    y = worldY,
+                    title = StorageManager.getDisplayNameFromUri(context, it),
+                    fileUri = it.toString(),
+                    fileMimeType = context.contentResolver.getType(it) ?: "*/*",
+                    x = (-cameraOffset.x + 180f) / zoomScale,
+                    y = (-cameraOffset.y + 300f) / zoomScale,
                     widthDp = 110f,
                     heightDp = 105f,
-                    colorHex = 0x00000000L,
                     type = ItemType.FILE_LINK
                 )
             )
@@ -527,12 +493,7 @@ fun CanvasLauncherApp(
         if (!incomingText.isNullOrBlank()) {
             val trimmed = incomingText.trim()
             if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-                openWebAppOnCanvas(
-                    title = "",
-                    rawUrl = trimmed,
-                    browserPackage = null,
-                    adBlockEnabled = true
-                )
+                openWebAppOnCanvas("", trimmed, null, true)
             } else {
                 items.add(
                     CanvasItem(
@@ -543,7 +504,6 @@ fun CanvasLauncherApp(
                         y = worldY,
                         widthDp = 210f,
                         heightDp = 145f,
-                        colorHex = 0x00000000L,
                         type = ItemType.NOTE
                     )
                 )
@@ -551,18 +511,16 @@ fun CanvasLauncherApp(
             added = true
         }
         if (incomingImageUri != null) {
-            val savedPath = StorageManager.copyUriToInternalStorage(context, incomingImageUri, "snapshots", "jpg")
-            if (savedPath != null) {
+            StorageManager.copyUriToInternalStorage(context, incomingImageUri, "snapshots", "jpg")?.let {
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
                         title = "Foto",
-                        imagePath = savedPath,
+                        imagePath = it,
                         x = worldX + 35f,
                         y = worldY + 35f,
                         widthDp = 190f,
                         heightDp = 175f,
-                        colorHex = 0x00000000L,
                         type = ItemType.IMAGE_SNAPSHOT
                     )
                 )
@@ -570,18 +528,16 @@ fun CanvasLauncherApp(
             }
         }
         if (incomingAudioUri != null) {
-            val savedPath = StorageManager.copyUriToInternalStorage(context, incomingAudioUri, "audio_memos", "m4a")
-            if (savedPath != null) {
+            StorageManager.copyUriToInternalStorage(context, incomingAudioUri, "audio_memos", "m4a")?.let {
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
                         title = "Audio",
-                        audioPath = savedPath,
+                        audioPath = it,
                         x = worldX + 45f,
                         y = worldY + 45f,
                         widthDp = 115f,
                         heightDp = 105f,
-                        colorHex = 0x00000000L,
                         type = ItemType.AUDIO_MEMO
                     )
                 )
@@ -594,14 +550,10 @@ fun CanvasLauncherApp(
         }
     }
 
-    val currentZoom by rememberUpdatedState(zoomScale)
-    val currentCamera by rememberUpdatedState(cameraOffset)
-
     fun openSystemWallpaperChooser() {
-        try {
-            val wallpaperIntent = Intent(Intent.ACTION_SET_WALLPAPER)
-            context.startActivity(Intent.createChooser(wallpaperIntent, "Scegli sfondo"))
-        } catch (_: Exception) {
+        runCatching {
+            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SET_WALLPAPER), "Scegli sfondo"))
+        }.onFailure {
             Toast.makeText(context, "Selettore sfondi non disponibile", Toast.LENGTH_SHORT).show()
         }
     }
@@ -609,29 +561,24 @@ fun CanvasLauncherApp(
     fun groupSelectedIntoSession() {
         val selectedObjects = items.filter { selectedIds.contains(it.id) }
         if (selectedObjects.size < 2) return
-        val packages = selectedObjects.mapNotNull { it.packageName }.distinct()
-        val summary = selectedObjects.joinToString("\n") { "• ${it.title}" }
-        val avgX = selectedObjects.map { it.x }.average().toFloat()
-        val avgY = selectedObjects.map { it.y }.average().toFloat()
-
         items.add(
             CanvasItem(
                 id = UUID.randomUUID().toString(),
                 title = "Sessione (${selectedObjects.size})",
-                content = summary,
-                x = avgX,
-                y = avgY,
+                content = selectedObjects.joinToString("\n") { "• ${it.title}" },
+                x = selectedObjects.map { it.x }.average().toFloat(),
+                y = selectedObjects.map { it.y }.average().toFloat(),
                 widthDp = 115f,
                 heightDp = 110f,
-                colorHex = 0x00000000L,
                 type = ItemType.SESSION_GROUP,
-                sessionPackages = packages
+                sessionPackages = selectedObjects.mapNotNull { it.packageName }.distinct()
             )
         )
         selectedIds.clear()
         StorageManager.saveItems(context, items)
     }
 
+    // CONTENITORE PRINCIPALE SENZA GESTURE BLOCCANTI SUL PADRE
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -640,198 +587,77 @@ fun CanvasLauncherApp(
                 viewportHeightPx = coords.size.height.toFloat().coerceAtLeast(1f)
             }
             .background(Color(0xFF0C0E14).copy(alpha = backgroundAlpha))
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = {
-                        if (resizingItemId != null) resizingItemId = null
-                    },
-                    onLongPress = { pressPos ->
-                        val hit = findItemAtScreenPos(
-                            screenPos = pressPos,
-                            items = items,
-                            cameraOffset = currentCamera,
-                            zoomScale = currentZoom,
-                            densityPx = density.density
-                        )
-                        targetItemForMenu = hit
-                        contextMenuScreenPos = pressPos
-                        showContextMenu = true
-                    }
-                )
-            }
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val firstChange = event.changes.firstOrNull()
-                        if (firstChange != null) {
-                            if (event.type == PointerEventType.Move) {
-                                cursorPos = firstChange.position
-                            }
-                            if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
-                                cursorPos = firstChange.position
-                                contextMenuScreenPos = firstChange.position
-                                targetItemForMenu = findItemAtScreenPos(
-                                    screenPos = firstChange.position,
-                                    items = items,
-                                    cameraOffset = currentCamera,
-                                    zoomScale = currentZoom,
-                                    densityPx = density.density
-                                )
-                                showContextMenu = true
-                            }
+    ) {
+        // LIVELLO 1: SFONDO + GESTURE PAN/ZOOM TELA (NON BLOCCA I BOTTONI O LE FINESTRE SOPRA)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            if (resizingItemId != null) resizingItemId = null
+                            if (selectedIds.isNotEmpty()) selectedIds.clear()
+                        },
+                        onLongPress = { pressPos ->
+                            targetItemForMenu = null
+                            contextMenuScreenPos = pressPos
+                            showContextMenu = true
                         }
-                    }
+                    )
                 }
-            }
-            .pointerInput(activeTool) {
-                when (activeTool) {
-                    // Modalità INTERACT: blocca completamente pan/zoom della tela per usare app e siti
-                    CanvasTool.INTERACT -> Unit
-
-                    // Modalità PAN ("Tela"): se il tocco parte dentro l'area contenuto di una finestra
-                    // Web App o App, lascia scorrere/navigare liberamente dentro l'app senza spostare la tela!
-                    CanvasTool.PAN -> {
+                .pointerInput(activeTool) {
+                    if (activeTool == CanvasTool.PAN) {
                         awaitEachGesture {
-                            val firstDown = awaitFirstDown(requireUnconsumed = false)
-                            val startedInsideWindowBody = isScreenPosInsideInteractiveWindowBody(
-                                screenPos = firstDown.position,
-                                items = items,
-                                cameraOffset = currentCamera,
-                                zoomScale = currentZoom,
-                                densityPx = density.density
-                            )
-
+                            awaitFirstDown(requireUnconsumed = false)
+                            var pastSlop = false
+                            var totalPan = Offset.Zero
+                            val slop = viewConfiguration.touchSlop
                             do {
                                 val event = awaitPointerEvent()
-                                val pressedPointers = event.changes.count { it.pressed }
-                                // Se il dito è dentro la WebView/App con 1 solo dito, non intercettiamo lo scroll
-                                if (startedInsideWindowBody && pressedPointers <= 1) {
-                                    continue
-                                }
+                                val pressedCount = event.changes.count { it.pressed }
                                 val zoomChange = event.calculateZoom()
                                 val panChange = event.calculatePan()
-                                if (zoomChange != 1f || panChange != Offset.Zero) {
+                                totalPan += panChange
+                                if (!pastSlop && (pressedCount > 1 || totalPan.getDistance() > slop)) {
+                                    pastSlop = true
+                                }
+                                if (pastSlop && (zoomChange != 1f || panChange != Offset.Zero)) {
                                     val centroid = event.calculateCentroid(useCurrent = false)
                                     val oldZoom = zoomScale
                                     val newZoom = (zoomScale * zoomChange).coerceIn(0.35f, 2.5f)
-                                    val zoomFactor = newZoom / oldZoom
-                                    cameraOffset = centroid - (centroid - cameraOffset) * zoomFactor + panChange
+                                    val factor = newZoom / oldZoom
+                                    cameraOffset = centroid - (centroid - cameraOffset) * factor + panChange
                                     zoomScale = newZoom
                                     event.changes.forEach { it.consume() }
                                 }
                             } while (event.changes.any { it.pressed })
                         }
                     }
-
-                    // Modalità SELECT ("Cursore") e LASSO ("Lazo")
-                    CanvasTool.SELECT, CanvasTool.LASSO -> {
-                        detectDragGestures(
-                            onDragStart = { start ->
-                                cursorPos = start
-                                if (activeTool == CanvasTool.LASSO) {
-                                    lassoPoints.clear()
-                                    lassoPoints.add(start)
-                                } else if (activeTool == CanvasTool.SELECT) {
-                                    val hit = findItemAtScreenPos(
-                                        screenPos = start,
-                                        items = items,
-                                        cameraOffset = currentCamera,
-                                        zoomScale = currentZoom,
-                                        densityPx = density.density
-                                    )
-                                    if (hit != null) {
-                                        if (!selectedIds.contains(hit.id)) {
-                                            selectedIds.clear()
-                                            selectedIds.add(hit.id)
-                                        }
-                                        isDraggingSelected = true
-                                    } else {
-                                        isDraggingSelected = false
-                                    }
-                                }
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                cursorPos += dragAmount
-
-                                if (activeTool == CanvasTool.LASSO) {
-                                    lassoPoints.add(cursorPos)
-                                } else if (activeTool == CanvasTool.SELECT && isDraggingSelected && selectedIds.isNotEmpty()) {
-                                    val deltaWorldX = dragAmount.x / currentZoom
-                                    val deltaWorldY = dragAmount.y / currentZoom
-                                    for (i in items.indices) {
-                                        if (selectedIds.contains(items[i].id)) {
-                                            items[i] = items[i].copy(
-                                                x = items[i].x + deltaWorldX,
-                                                y = items[i].y + deltaWorldY
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            onDragEnd = {
-                                if (activeTool == CanvasTool.LASSO && lassoPoints.size > 2) {
-                                    selectedIds.clear()
-                                    for (obj in items) {
-                                        val wPx = obj.widthDp * density.density
-                                        val hPx = obj.heightDp * density.density
-                                        val left = obj.x * currentZoom + currentCamera.x
-                                        val top = obj.y * currentZoom + currentCamera.y
-                                        val right = left + wPx * currentZoom
-                                        val bottom = top + hPx * currentZoom
-                                        val center = Offset((left + right) / 2f, (top + bottom) / 2f)
-
-                                        val checkPoints = listOf(
-                                            center,
-                                            Offset(left, top),
-                                            Offset(right, top),
-                                            Offset(left, bottom),
-                                            Offset(right, bottom)
-                                        )
-                                        if (checkPoints.any { isPointInPolygon(it, lassoPoints) }) {
-                                            selectedIds.add(obj.id)
-                                        }
-                                    }
-                                    lassoPoints.clear()
-                                    if (selectedIds.isNotEmpty()) {
-                                        activeTool = CanvasTool.SELECT
-                                    }
-                                } else if (activeTool == CanvasTool.SELECT && isDraggingSelected) {
-                                    StorageManager.saveItems(context, items)
-                                    isDraggingSelected = false
-                                }
-                            }
-                        )
-                    }
                 }
-            }
-    ) {
-        // Griglia puntinata leggera
-        if (backgroundAlpha > 0.08f) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val step = 84f * zoomScale
-                if (step > 18f) {
-                    val startX = cameraOffset.x % step
-                    val startY = cameraOffset.y % step
-                    var x = startX
-                    while (x < size.width) {
-                        var y = startY
-                        while (y < size.height) {
-                            drawCircle(
-                                color = Color(0xFF283044).copy(alpha = backgroundAlpha),
-                                radius = 2.5f,
-                                center = Offset(x, y)
-                            )
-                            y += step
+        ) {
+            if (backgroundAlpha > 0.08f) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val step = 84f * zoomScale
+                    if (step > 18f) {
+                        var x = cameraOffset.x % step
+                        while (x < size.width) {
+                            var y = cameraOffset.y % step
+                            while (y < size.height) {
+                                drawCircle(
+                                    color = Color(0xFF283044).copy(alpha = backgroundAlpha),
+                                    radius = 2.5f,
+                                    center = Offset(x, y)
+                                )
+                                y += step
+                            }
+                            x += step
                         }
-                        x += step
                     }
                 }
             }
         }
 
-        // --- TELA INFINITA 2D (WORLD SPACE) ---
+        // LIVELLO 2: OGGETTI E FINESTRE SULLA TELA
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -847,28 +673,41 @@ fun CanvasLauncherApp(
                 val isSelected = selectedIds.contains(item.id)
                 val isResizing = resizingItemId == item.id
 
-                // Calcolo Viewport Culling
                 val screenLeft = item.x * zoomScale + cameraOffset.x
                 val screenTop = item.y * zoomScale + cameraOffset.y
                 val screenRight = screenLeft + item.widthDp * density.density * zoomScale
                 val screenBottom = screenTop + item.heightDp * density.density * zoomScale
-                val margin = 120f
                 val isVisibleInViewport =
-                    screenRight >= -margin &&
-                    screenLeft <= viewportWidthPx + margin &&
-                    screenBottom >= -margin &&
-                    screenTop <= viewportHeightPx + margin
+                    screenRight >= -120f && screenLeft <= viewportWidthPx + 120f &&
+                    screenBottom >= -120f && screenTop <= viewportHeightPx + 120f
 
                 val desktopLabelStyle = TextStyle(
                     color = Color.White,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
-                    shadow = Shadow(
-                        color = Color(0xDD000000),
-                        offset = Offset(1f, 2f),
-                        blurRadius = 4f
-                    )
+                    shadow = Shadow(Color(0xDD000000), Offset(1f, 2f), 4f)
                 )
+
+                val itemDragModifier = if (activeTool == CanvasTool.SELECT &&
+                    item.type != ItemType.APP_WINDOW && item.type != ItemType.WEB_APP
+                ) {
+                    Modifier.pointerInput(item.id, activeTool) {
+                        detectDragGestures(
+                            onDragEnd = { StorageManager.saveItems(context, items) }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            val idx = items.indexOfFirst { it.id == item.id }
+                            if (idx >= 0) {
+                                items[idx] = items[idx].copy(
+                                    x = items[idx].x + dragAmount.x,
+                                    y = items[idx].y + dragAmount.y
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Modifier
+                }
 
                 val selectionModifier = if (isSelected || isResizing) {
                     Modifier.border(
@@ -885,21 +724,20 @@ fun CanvasLauncherApp(
                         .offset { IntOffset(item.x.roundToInt(), item.y.roundToInt()) }
                         .size(item.widthDp.dp, item.heightDp.dp)
                         .then(selectionModifier)
+                        .then(itemDragModifier)
                 ) {
                     when (item.type) {
-                        // 1. FINESTRA APP LIVE (VirtualDisplay + Shizuku + Surface Detaching + Snapshot Riavvio)
                         ItemType.APP_WINDOW -> {
                             @Suppress("UNUSED_VARIABLE")
                             val rev = windowSessionRevision
                             val isSessionLive = VirtualDisplayWindowManager.hasActiveSession(item.id)
 
                             LaunchedEffect(isVisibleInViewport, isSessionLive) {
-                                val session = VirtualDisplayWindowManager.getSession(item.id)
-                                if (session != null) {
+                                VirtualDisplayWindowManager.getSession(item.id)?.let { session ->
                                     VirtualDisplayWindowManager.updateSurfaceAttachment(
-                                        itemId = item.id,
-                                        surface = session.attachedSurface,
-                                        isVisibleOnScreen = isVisibleInViewport
+                                        item.id,
+                                        session.attachedSurface,
+                                        isVisibleInViewport
                                     )
                                 }
                             }
@@ -912,7 +750,7 @@ fun CanvasLauncherApp(
                                     .background(Color(0xFF141822))
                                     .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp))
                             ) {
-                                // Barra titolo trascinabile per spostare la finestra + comandi
+                                // Barra titolo trascinabile
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
@@ -939,12 +777,7 @@ fun CanvasLauncherApp(
                                         onClick = { VirtualDisplayWindowManager.injectBackKey(item.id) },
                                         modifier = Modifier.size(28.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                            contentDescription = "Indietro",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
+                                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Indietro", tint = Color.White, modifier = Modifier.size(16.dp))
                                     }
 
                                     Text(
@@ -954,9 +787,7 @@ fun CanvasLauncherApp(
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .padding(horizontal = 4.dp)
+                                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
                                     )
 
                                     IconButton(
@@ -964,40 +795,31 @@ fun CanvasLauncherApp(
                                             val newFallback = !item.imeFallbackDisplay
                                             items[index] = item.copy(imeFallbackDisplay = newFallback)
                                             StorageManager.saveItems(context, items)
-                                            val session = VirtualDisplayWindowManager.getSession(item.id)
-                                            if (session != null) {
+                                            VirtualDisplayWindowManager.getSession(item.id)?.let { s ->
                                                 VirtualDisplayWindowManager.setDisplayImePolicy(
-                                                    session.displayId,
+                                                    s.displayId,
                                                     if (newFallback) VirtualDisplayWindowManager.IME_POLICY_FALLBACK_DISPLAY
                                                     else VirtualDisplayWindowManager.IME_POLICY_LOCAL
                                                 )
                                             }
-                                            Toast.makeText(
-                                                context,
-                                                if (newFallback) "Tastiera sullo schermo principale"
-                                                else "Tastiera dentro la mini-finestra",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
                                         },
                                         modifier = Modifier.size(28.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.Keyboard,
-                                            contentDescription = "Policy Tastiera",
+                                            Icons.Rounded.Keyboard,
+                                            "Tastiera",
                                             tint = if (item.imeFallbackDisplay) Color(0xFF94A3B8) else Color(0xFF38BDF8),
                                             modifier = Modifier.size(15.dp)
                                         )
                                     }
 
                                     IconButton(
-                                        onClick = {
-                                            resizingItemId = if (isResizing) null else item.id
-                                        },
+                                        onClick = { resizingItemId = if (isResizing) null else item.id },
                                         modifier = Modifier.size(28.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.AspectRatio,
-                                            contentDescription = "Ridimensiona",
+                                            Icons.Rounded.AspectRatio,
+                                            "Ridimensiona",
                                             tint = if (isResizing) Color(0xFF38BDF8) else Color(0xFF94A3B8),
                                             modifier = Modifier.size(15.dp)
                                         )
@@ -1011,12 +833,7 @@ fun CanvasLauncherApp(
                                         },
                                         modifier = Modifier.size(28.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Close,
-                                            contentDescription = "Chiudi Finestra",
-                                            tint = Color(0xFFF87171),
-                                            modifier = Modifier.size(16.dp)
-                                        )
+                                        Icon(Icons.Rounded.Close, "Chiudi", tint = Color(0xFFF87171), modifier = Modifier.size(16.dp))
                                     }
                                 }
 
@@ -1035,36 +852,16 @@ fun CanvasLauncherApp(
                                                     )
                                                     VirtualDisplayWindowManager.getSession(item.id)?.textureView = this
                                                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                                        override fun onSurfaceTextureAvailable(
-                                                            st: SurfaceTexture,
-                                                            w: Int,
-                                                            h: Int
-                                                        ) {
-                                                            val s = Surface(st)
-                                                            VirtualDisplayWindowManager.updateSurfaceAttachment(
-                                                                item.id,
-                                                                s,
-                                                                isVisibleInViewport
-                                                            )
+                                                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                                                            VirtualDisplayWindowManager.updateSurfaceAttachment(item.id, Surface(st), isVisibleInViewport)
                                                         }
-
-                                                        override fun onSurfaceTextureSizeChanged(
-                                                            st: SurfaceTexture,
-                                                            w: Int,
-                                                            h: Int
-                                                        ) {
+                                                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
                                                             VirtualDisplayWindowManager.resizeSession(item.id, w, h)
                                                         }
-
                                                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                                                            VirtualDisplayWindowManager.updateSurfaceAttachment(
-                                                                item.id,
-                                                                null,
-                                                                false
-                                                            )
+                                                            VirtualDisplayWindowManager.updateSurfaceAttachment(item.id, null, false)
                                                             return true
                                                         }
-
                                                         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                                                     }
                                                 }
@@ -1085,35 +882,20 @@ fun CanvasLauncherApp(
                                                                 change.pressed && !change.previousPressed -> {
                                                                     touchDownTime = SystemClock.uptimeMillis()
                                                                     VirtualDisplayWindowManager.injectMappedTouch(
-                                                                        item.id,
-                                                                        MotionEvent.ACTION_DOWN,
-                                                                        touchDownTime,
-                                                                        change.position.x,
-                                                                        change.position.y,
-                                                                        renderedW,
-                                                                        renderedH
+                                                                        item.id, MotionEvent.ACTION_DOWN, touchDownTime,
+                                                                        change.position.x, change.position.y, renderedW, renderedH
                                                                     )
                                                                 }
                                                                 change.pressed && change.previousPressed -> {
                                                                     VirtualDisplayWindowManager.injectMappedTouch(
-                                                                        item.id,
-                                                                        MotionEvent.ACTION_MOVE,
-                                                                        touchDownTime,
-                                                                        change.position.x,
-                                                                        change.position.y,
-                                                                        renderedW,
-                                                                        renderedH
+                                                                        item.id, MotionEvent.ACTION_MOVE, touchDownTime,
+                                                                        change.position.x, change.position.y, renderedW, renderedH
                                                                     )
                                                                 }
                                                                 !change.pressed && change.previousPressed -> {
                                                                     VirtualDisplayWindowManager.injectMappedTouch(
-                                                                        item.id,
-                                                                        MotionEvent.ACTION_UP,
-                                                                        touchDownTime,
-                                                                        change.position.x,
-                                                                        change.position.y,
-                                                                        renderedW,
-                                                                        renderedH
+                                                                        item.id, MotionEvent.ACTION_UP, touchDownTime,
+                                                                        change.position.x, change.position.y, renderedW, renderedH
                                                                     )
                                                                 }
                                                             }
@@ -1125,52 +907,33 @@ fun CanvasLauncherApp(
                                         if (!item.lastSnapshotPath.isNullOrEmpty() && File(item.lastSnapshotPath).exists()) {
                                             AsyncImage(
                                                 model = File(item.lastSnapshotPath),
-                                                contentDescription = "Ultimo stato ${item.title}",
+                                                contentDescription = null,
                                                 contentScale = ContentScale.Crop,
                                                 modifier = Modifier.fillMaxSize()
                                             )
                                         }
                                         Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(Color(0x880B0E17)),
+                                            modifier = Modifier.fillMaxSize().background(Color(0x880B0E17)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Column(
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                                modifier = Modifier.padding(12.dp)
+                                            Button(
+                                                onClick = {
+                                                    val wPx = (item.widthDp * density.density).roundToInt()
+                                                    val hPx = ((item.heightDp - 36f) * density.density).roundToInt()
+                                                    VirtualDisplayWindowManager.launchAppInWindowOrFallback(
+                                                        context = context,
+                                                        item = item,
+                                                        widthPx = wPx,
+                                                        heightPx = hPx,
+                                                        onVirtualDisplayCreated = { windowSessionRevision++ },
+                                                        onFallbackFreeformLaunched = {}
+                                                    )
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
                                             ) {
-                                                Text(
-                                                    text = "Stato salvato pre-riavvio",
-                                                    color = Color(0xFFCBD5E1),
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                                Button(
-                                                    onClick = {
-                                                        val wPx = (item.widthDp * density.density).roundToInt()
-                                                        val hPx = ((item.heightDp - 36f) * density.density).roundToInt()
-                                                        VirtualDisplayWindowManager.launchAppInWindowOrFallback(
-                                                            context = context,
-                                                            item = item,
-                                                            widthPx = wPx,
-                                                            heightPx = hPx,
-                                                            onVirtualDisplayCreated = { windowSessionRevision++ },
-                                                            onFallbackFreeformLaunched = {}
-                                                        )
-                                                    },
-                                                    colors = ButtonDefaults.buttonColors(
-                                                        containerColor = Color(0xFF2563EB)
-                                                    )
-                                                ) {
-                                                    Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(16.dp))
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Text(
-                                                        text = if (shizukuReady) "Riprendi su Tela" else "Apri in Freeform",
-                                                        fontSize = 12.sp
-                                                    )
-                                                }
+                                                Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(if (liveShizukuReady) "Riprendi su Tela" else "Apri in Freeform", fontSize = 12.sp)
                                             }
                                         }
                                     }
@@ -1178,7 +941,6 @@ fun CanvasLauncherApp(
                             }
                         }
 
-                        // 2. FINESTRA WEB APP / BROWSER LIVE (con AdBlock Brave-style oppure Browser esterno scelto)
                         ItemType.WEB_APP -> {
                             val targetUrl = item.url ?: "https://www.google.com"
                             val blockedCount = adBlockedCounts[item.id] ?: 0
@@ -1190,17 +952,13 @@ fun CanvasLauncherApp(
 
                             LaunchedEffect(isVisibleInViewport) {
                                 if (!usesExternalBrowser) {
-                                    val wv = VirtualDisplayWindowManager.activeWebViews[item.id]
-                                    if (wv != null) {
+                                    VirtualDisplayWindowManager.activeWebViews[item.id]?.let { wv ->
                                         if (isVisibleInViewport) wv.onResume() else wv.onPause()
                                     }
                                 } else {
-                                    val session = VirtualDisplayWindowManager.getSession(item.id)
-                                    if (session != null) {
+                                    VirtualDisplayWindowManager.getSession(item.id)?.let { s ->
                                         VirtualDisplayWindowManager.updateSurfaceAttachment(
-                                            itemId = item.id,
-                                            surface = session.attachedSurface,
-                                            isVisibleOnScreen = isVisibleInViewport
+                                            item.id, s.attachedSurface, isVisibleInViewport
                                         )
                                     }
                                 }
@@ -1214,7 +972,7 @@ fun CanvasLauncherApp(
                                     .background(Color(0xFF141822))
                                     .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp))
                             ) {
-                                // Barra titolo trascinabile per spostare la finestra + controlli Web / AdBlock
+                                // Barra titolo trascinabile
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier
@@ -1239,51 +997,28 @@ fun CanvasLauncherApp(
                                 ) {
                                     IconButton(
                                         onClick = {
-                                            if (usesExternalBrowser) {
-                                                VirtualDisplayWindowManager.injectBackKey(item.id)
-                                            } else {
-                                                val wv = VirtualDisplayWindowManager.activeWebViews[item.id]
-                                                if (wv?.canGoBack() == true) wv.goBack()
-                                            }
+                                            if (usesExternalBrowser) VirtualDisplayWindowManager.injectBackKey(item.id)
+                                            else VirtualDisplayWindowManager.activeWebViews[item.id]?.let { if (it.canGoBack()) it.goBack() }
                                         },
                                         modifier = Modifier.size(26.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                                            contentDescription = "Indietro",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(15.dp)
-                                        )
+                                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Indietro", tint = Color.White, modifier = Modifier.size(15.dp))
                                     }
 
                                     if (!usesExternalBrowser) {
                                         IconButton(
                                             onClick = {
-                                                val wv = VirtualDisplayWindowManager.activeWebViews[item.id]
-                                                if (wv?.canGoForward() == true) wv.goForward()
+                                                VirtualDisplayWindowManager.activeWebViews[item.id]?.let { if (it.canGoForward()) it.goForward() }
                                             },
                                             modifier = Modifier.size(26.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                                                contentDescription = "Avanti",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(15.dp)
-                                            )
+                                            Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Avanti", tint = Color.White, modifier = Modifier.size(15.dp))
                                         }
-
                                         IconButton(
-                                            onClick = {
-                                                VirtualDisplayWindowManager.activeWebViews[item.id]?.reload()
-                                            },
+                                            onClick = { VirtualDisplayWindowManager.activeWebViews[item.id]?.reload() },
                                             modifier = Modifier.size(26.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Refresh,
-                                                contentDescription = "Ricarica",
-                                                tint = Color(0xFF94A3B8),
-                                                modifier = Modifier.size(15.dp)
-                                            )
+                                            Icon(Icons.Rounded.Refresh, "Ricarica", tint = Color(0xFF94A3B8), modifier = Modifier.size(15.dp))
                                         }
                                     }
 
@@ -1294,62 +1029,43 @@ fun CanvasLauncherApp(
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .padding(horizontal = 4.dp)
+                                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
                                     )
 
-                                    // Scudo AdBlock stile Brave (solo per WebView interna)
                                     if (!usesExternalBrowser) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .background(
-                                                    if (item.adBlockEnabled) Color(0x33FB923C)
-                                                    else Color(0x2294A3B8)
-                                                )
+                                                .background(if (item.adBlockEnabled) Color(0x33FB923C) else Color(0x2294A3B8))
                                                 .clickable {
                                                     val newAdBlock = !item.adBlockEnabled
                                                     items[index] = item.copy(adBlockEnabled = newAdBlock)
                                                     StorageManager.saveItems(context, items)
                                                     VirtualDisplayWindowManager.activeWebViews[item.id]?.reload()
-                                                    Toast.makeText(
-                                                        context,
-                                                        if (newAdBlock) "Scudo AdBlock Attivato"
-                                                        else "Scudo AdBlock Disattivato",
-                                                        Toast.LENGTH_SHORT
-                                                    ).show()
                                                 }
                                                 .padding(horizontal = 5.dp, vertical = 2.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Rounded.Shield,
-                                                contentDescription = "AdBlock",
+                                                Icons.Rounded.Shield,
+                                                "AdBlock",
                                                 tint = if (item.adBlockEnabled) Color(0xFFFB923C) else Color(0xFF64748B),
                                                 modifier = Modifier.size(13.dp)
                                             )
                                             if (item.adBlockEnabled && blockedCount > 0) {
                                                 Spacer(modifier = Modifier.width(2.dp))
-                                                Text(
-                                                    text = "$blockedCount",
-                                                    color = Color(0xFFFB923C),
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
+                                                Text("$blockedCount", color = Color(0xFFFB923C), fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                             }
                                         }
                                     }
 
                                     IconButton(
-                                        onClick = {
-                                            resizingItemId = if (isResizing) null else item.id
-                                        },
+                                        onClick = { resizingItemId = if (isResizing) null else item.id },
                                         modifier = Modifier.size(26.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.AspectRatio,
-                                            contentDescription = "Ridimensiona",
+                                            Icons.Rounded.AspectRatio,
+                                            "Ridimensiona",
                                             tint = if (isResizing) Color(0xFF38BDF8) else Color(0xFF94A3B8),
                                             modifier = Modifier.size(15.dp)
                                         )
@@ -1357,28 +1073,19 @@ fun CanvasLauncherApp(
 
                                     IconButton(
                                         onClick = {
-                                            if (usesExternalBrowser) {
-                                                VirtualDisplayWindowManager.closeSession(item.id)
-                                            } else {
-                                                VirtualDisplayWindowManager.activeWebViews.remove(item.id)?.destroy()
-                                            }
+                                            if (usesExternalBrowser) VirtualDisplayWindowManager.closeSession(item.id)
+                                            else VirtualDisplayWindowManager.activeWebViews.remove(item.id)?.destroy()
                                             items.removeAt(index)
                                             StorageManager.saveItems(context, items)
                                         },
                                         modifier = Modifier.size(26.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Close,
-                                            contentDescription = "Chiudi Web App",
-                                            tint = Color(0xFFF87171),
-                                            modifier = Modifier.size(15.dp)
-                                        )
+                                        Icon(Icons.Rounded.Close, "Chiudi", tint = Color(0xFFF87171), modifier = Modifier.size(15.dp))
                                     }
                                 }
 
                                 Box(modifier = Modifier.fillMaxSize()) {
                                     if (usesExternalBrowser) {
-                                        // Web App aperta tramite browser esterno scelto dall'utente (es. Brave, Chrome, Firefox)
                                         if (isExternalSessionLive) {
                                             var renderedW by remember { mutableFloatStateOf(1f) }
                                             var renderedH by remember { mutableFloatStateOf(1f) }
@@ -1394,11 +1101,7 @@ fun CanvasLauncherApp(
                                                         VirtualDisplayWindowManager.getSession(item.id)?.textureView = this
                                                         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                                             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                                                                VirtualDisplayWindowManager.updateSurfaceAttachment(
-                                                                    item.id,
-                                                                    Surface(st),
-                                                                    isVisibleInViewport
-                                                                )
+                                                                VirtualDisplayWindowManager.updateSurfaceAttachment(item.id, Surface(st), isVisibleInViewport)
                                                             }
                                                             override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
                                                                 VirtualDisplayWindowManager.resizeSession(item.id, w, h)
@@ -1449,86 +1152,44 @@ fun CanvasLauncherApp(
                                                     }
                                             )
                                         } else {
-                                            if (!item.lastSnapshotPath.isNullOrEmpty() && File(item.lastSnapshotPath).exists()) {
-                                                AsyncImage(
-                                                    model = File(item.lastSnapshotPath),
-                                                    contentDescription = null,
-                                                    contentScale = ContentScale.Crop,
-                                                    modifier = Modifier.fillMaxSize()
-                                                )
-                                            }
                                             val browserLabel = installedBrowsers
                                                 .find { it.packageName == item.browserPackage }?.label
                                                 ?: item.browserPackage ?: "Browser"
                                             Box(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .background(Color(0x990B0E17)),
+                                                modifier = Modifier.fillMaxSize().background(Color(0x990B0E17)),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Column(
-                                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                                    modifier = Modifier.padding(12.dp)
+                                                Button(
+                                                    onClick = {
+                                                        val wPx = (item.widthDp * density.density).roundToInt()
+                                                        val hPx = ((item.heightDp - 36f) * density.density).roundToInt()
+                                                        VirtualDisplayWindowManager.launchAppInWindowOrFallback(
+                                                            context = context,
+                                                            item = item,
+                                                            widthPx = wPx,
+                                                            heightPx = hPx,
+                                                            initialUrl = targetUrl,
+                                                            onVirtualDisplayCreated = { windowSessionRevision++ },
+                                                            onFallbackFreeformLaunched = {}
+                                                        )
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0D9488))
                                                 ) {
-                                                    Text(
-                                                        text = "Browser: $browserLabel",
-                                                        color = Color(0xFFCBD5E1),
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.SemiBold
-                                                    )
-                                                    Button(
-                                                        onClick = {
-                                                            val wPx = (item.widthDp * density.density).roundToInt()
-                                                            val hPx = ((item.heightDp - 36f) * density.density).roundToInt()
-                                                            VirtualDisplayWindowManager.launchAppInWindowOrFallback(
-                                                                context = context,
-                                                                item = item,
-                                                                widthPx = wPx,
-                                                                heightPx = hPx,
-                                                                initialUrl = targetUrl,
-                                                                onVirtualDisplayCreated = { windowSessionRevision++ },
-                                                                onFallbackFreeformLaunched = {}
-                                                            )
-                                                        },
-                                                        colors = ButtonDefaults.buttonColors(
-                                                            containerColor = Color(0xFF0D9488)
-                                                        )
-                                                    ) {
-                                                        Icon(Icons.Rounded.OpenInNew, null, modifier = Modifier.size(16.dp))
-                                                        Spacer(modifier = Modifier.width(6.dp))
-                                                        Text(
-                                                            text = if (shizukuReady) "Apri $browserLabel su Tela"
-                                                            else "Apri in $browserLabel",
-                                                            fontSize = 12.sp
-                                                        )
-                                                    }
+                                                    Icon(Icons.Rounded.OpenInNew, null, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(if (liveShizukuReady) "Apri $browserLabel su Tela" else "Apri in $browserLabel", fontSize = 12.sp)
                                                 }
                                             }
                                         }
                                     } else {
-                                        // WebView interna con AdBlock & Anti-Tracker
-                                        if (!item.lastSnapshotPath.isNullOrEmpty() && File(item.lastSnapshotPath).exists()) {
-                                            AsyncImage(
-                                                model = File(item.lastSnapshotPath),
-                                                contentDescription = null,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
-                                        }
-
                                         AndroidView(
                                             factory = { ctx ->
                                                 VirtualDisplayWindowManager.activeWebViews.getOrPut(item.id) {
                                                     createConfiguredWebView(
                                                         context = ctx,
                                                         initialUrl = targetUrl,
-                                                        isAdBlockEnabled = {
-                                                            items.find { it.id == item.id }?.adBlockEnabled ?: true
-                                                        },
-                                                        onAdBlocked = {
-                                                            adBlockedCounts[item.id] = (adBlockedCounts[item.id] ?: 0) + 1
-                                                        },
+                                                        isAdBlockEnabled = { items.find { it.id == item.id }?.adBlockEnabled ?: true },
+                                                        onAdBlocked = { adBlockedCounts[item.id] = (adBlockedCounts[item.id] ?: 0) + 1 },
                                                         onUrlOrTitleUpdated = { newUrl, newTitle ->
                                                             val idx = items.indexOfFirst { it.id == item.id }
                                                             if (idx >= 0) {
@@ -1548,7 +1209,6 @@ fun CanvasLauncherApp(
                             }
                         }
 
-                        // 3. WIDGET DI SISTEMA DIRETTAMENTE SULLA TELA (SENZA BOX)
                         ItemType.SYSTEM_WIDGET -> {
                             val widgetInfo = remember(item.appWidgetId) {
                                 if (item.appWidgetId != -1) appWidgetManager.getAppWidgetInfo(item.appWidgetId) else null
@@ -1575,22 +1235,14 @@ fun CanvasLauncherApp(
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 } else {
-                                    Text(
-                                        text = item.title,
-                                        style = desktopLabelStyle,
-                                        modifier = Modifier.align(Alignment.Center)
-                                    )
+                                    Text(item.title, style = desktopLabelStyle, modifier = Modifier.align(Alignment.Center))
                                 }
                             }
                         }
 
-                        // 4. NOTA DIRETTAMENTE SULLA TELA (TESTO SCORREVOLE, SENZA BOX DI DEFAULT)
                         ItemType.NOTE -> {
-                            val noteBg = if (item.colorHex == 0x00000000L) {
-                                Color.Transparent
-                            } else {
-                                Color(item.colorHex).copy(alpha = 0.72f)
-                            }
+                            val noteBg = if (item.colorHex == 0x00000000L) Color.Transparent
+                            else Color(item.colorHex).copy(alpha = 0.72f)
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -1617,29 +1269,17 @@ fun CanvasLauncherApp(
                             ) {
                                 Text(
                                     text = item.title,
-                                    style = desktopLabelStyle.copy(
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFFBBF24)
-                                    ),
+                                    style = desktopLabelStyle.copy(fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFBBF24)),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .verticalScroll(rememberScrollState())
-                                ) {
-                                    Text(
-                                        text = item.content,
-                                        style = desktopLabelStyle.copy(fontSize = 13.sp)
-                                    )
+                                Box(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                                    Text(text = item.content, style = desktopLabelStyle.copy(fontSize = 13.sp))
                                 }
                             }
                         }
 
-                        // 5. FOTO / SNAPSHOT DIRETTAMENTE SULLA TELA CON NOME SOTTO (SENZA BOX)
                         ItemType.IMAGE_SNAPSHOT -> {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -1668,10 +1308,7 @@ fun CanvasLauncherApp(
                                         model = File(item.imagePath),
                                         contentDescription = item.title,
                                         contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
+                                        modifier = Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp))
                                     )
                                 }
                                 Text(
@@ -1685,7 +1322,6 @@ fun CanvasLauncherApp(
                             }
                         }
 
-                        // 6. ICONE DESKTOP PURE SENZA BOX
                         else -> {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -1698,22 +1334,16 @@ fun CanvasLauncherApp(
                                                 toggleItemSelection(selectedIds, item.id)
                                             } else {
                                                 when (item.type) {
-                                                    ItemType.APP_SHORTCUT -> {
-                                                        item.packageName?.let { pkg ->
-                                                            val appObj = appList.find { it.packageName == pkg }
-                                                            if (appObj != null) launchApp(context, appObj)
-                                                            else launchPackage(context, pkg)
-                                                        }
+                                                    ItemType.APP_SHORTCUT -> item.packageName?.let { pkg ->
+                                                        val appObj = appList.find { it.packageName == pkg }
+                                                        if (appObj != null) launchApp(context, appObj) else launchPackage(context, pkg)
                                                     }
                                                     ItemType.SYSTEM_SHORTCUT -> openSystemOrCustomShortcut(context, item)
                                                     ItemType.FILE_LINK -> openLinkedFile(context, item)
                                                     ItemType.AUDIO_MEMO -> toggleAudioPlayback(item)
                                                     ItemType.SESSION_GROUP -> {
-                                                        if (item.sessionPackages.size == 1) {
-                                                            launchPackage(context, item.sessionPackages.first())
-                                                        } else if (item.sessionPackages.isNotEmpty()) {
-                                                            activeSessionDialogItem = item
-                                                        }
+                                                        if (item.sessionPackages.size == 1) launchPackage(context, item.sessionPackages.first())
+                                                        else if (item.sessionPackages.isNotEmpty()) activeSessionDialogItem = item
                                                     }
                                                     else -> {}
                                                 }
@@ -1734,62 +1364,31 @@ fun CanvasLauncherApp(
                                                 ?.icon?.toBitmap(width = 120, height = 120)?.asImageBitmap()
                                         }
                                         if (appIcon != null) {
-                                            Image(
-                                                bitmap = appIcon,
-                                                contentDescription = item.title,
-                                                modifier = Modifier.size(56.dp)
-                                            )
+                                            Image(bitmap = appIcon, contentDescription = item.title, modifier = Modifier.size(56.dp))
                                         } else {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Apps,
-                                                contentDescription = item.title,
-                                                tint = Color(0xFF38BDF8),
-                                                modifier = Modifier.size(52.dp)
-                                            )
+                                            Icon(Icons.Rounded.Apps, item.title, tint = Color(0xFF38BDF8), modifier = Modifier.size(52.dp))
                                         }
                                     }
-
                                     ItemType.SYSTEM_SHORTCUT -> {
                                         Box(
-                                            modifier = Modifier
-                                                .size(52.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xCC1E293B)),
+                                            modifier = Modifier.size(52.dp).clip(CircleShape).background(Color(0xCC1E293B)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.SettingsApplications,
-                                                contentDescription = item.title,
-                                                tint = Color(0xFFFB923C),
-                                                modifier = Modifier.size(30.dp)
-                                            )
+                                            Icon(Icons.Rounded.SettingsApplications, item.title, tint = Color(0xFFFB923C), modifier = Modifier.size(30.dp))
                                         }
                                     }
-
                                     ItemType.FILE_LINK -> {
                                         Box(
-                                            modifier = Modifier
-                                                .size(52.dp)
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .background(Color(0xCC1E293B)),
+                                            modifier = Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xCC1E293B)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Description,
-                                                contentDescription = item.title,
-                                                tint = Color(0xFF2DD4BF),
-                                                modifier = Modifier.size(30.dp)
-                                            )
+                                            Icon(Icons.Rounded.Description, item.title, tint = Color(0xFF2DD4BF), modifier = Modifier.size(30.dp))
                                         }
                                     }
-
                                     ItemType.AUDIO_MEMO -> {
                                         val isPlaying = playingAudioId == item.id
                                         Box(
-                                            modifier = Modifier
-                                                .size(52.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFFF43F5E)),
+                                            modifier = Modifier.size(52.dp).clip(CircleShape).background(Color(0xFFF43F5E)),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
@@ -1800,29 +1399,17 @@ fun CanvasLauncherApp(
                                             )
                                         }
                                     }
-
                                     ItemType.SESSION_GROUP -> {
                                         Box(
-                                            modifier = Modifier
-                                                .size(52.dp)
-                                                .clip(RoundedCornerShape(16.dp))
-                                                .background(Color(0xCC164E3F)),
+                                            modifier = Modifier.size(52.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xCC164E3F)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Workspaces,
-                                                contentDescription = item.title,
-                                                tint = Color(0xFF34D399),
-                                                modifier = Modifier.size(30.dp)
-                                            )
+                                            Icon(Icons.Rounded.Workspaces, item.title, tint = Color(0xFF34D399), modifier = Modifier.size(30.dp))
                                         }
                                     }
-
                                     else -> {}
                                 }
-
                                 Spacer(modifier = Modifier.height(6.dp))
-
                                 Text(
                                     text = item.title,
                                     style = desktopLabelStyle,
@@ -1834,101 +1421,95 @@ fun CanvasLauncherApp(
                         }
                     }
 
-                    // --- 4 MANIGLIE DI RIDIMENSIONAMENTO SUGLI ANGOLI ---
                     if (isResizing) {
                         val minW = if (item.type == ItemType.APP_WINDOW || item.type == ItemType.WEB_APP) 220f else 80f
                         val minH = if (item.type == ItemType.APP_WINDOW || item.type == ItemType.WEB_APP) 240f else 80f
+                        ResizeCornerHandle(Alignment.TopStart, { dx, dy ->
+                            val curr = items[index]
+                            val newW = (curr.widthDp - dx / density.density).coerceAtLeast(minW)
+                            val newH = (curr.heightDp - dy / density.density).coerceAtLeast(minH)
+                            items[index] = curr.copy(
+                                x = curr.x + (curr.widthDp - newW) * density.density,
+                                y = curr.y + (curr.heightDp - newH) * density.density,
+                                widthDp = newW,
+                                heightDp = newH
+                            )
+                        }) { StorageManager.saveItems(context, items) }
 
-                        ResizeCornerHandle(
-                            alignment = Alignment.TopStart,
-                            onDragDelta = { dx, dy ->
-                                val curr = items[index]
-                                val dW = dx / density.density
-                                val dH = dy / density.density
-                                val newW = (curr.widthDp - dW).coerceAtLeast(minW)
-                                val newH = (curr.heightDp - dH).coerceAtLeast(minH)
-                                val actualDW = curr.widthDp - newW
-                                val actualDH = curr.heightDp - newH
-                                items[index] = curr.copy(
-                                    x = curr.x + actualDW * density.density,
-                                    y = curr.y + actualDH * density.density,
-                                    widthDp = newW,
-                                    heightDp = newH
-                                )
-                            },
-                            onDragEnd = { StorageManager.saveItems(context, items) }
-                        )
+                        ResizeCornerHandle(Alignment.TopEnd, { dx, dy ->
+                            val curr = items[index]
+                            val newW = (curr.widthDp + dx / density.density).coerceAtLeast(minW)
+                            val newH = (curr.heightDp - dy / density.density).coerceAtLeast(minH)
+                            items[index] = curr.copy(
+                                y = curr.y + (curr.heightDp - newH) * density.density,
+                                widthDp = newW,
+                                heightDp = newH
+                            )
+                        }) { StorageManager.saveItems(context, items) }
 
-                        ResizeCornerHandle(
-                            alignment = Alignment.TopEnd,
-                            onDragDelta = { dx, dy ->
-                                val curr = items[index]
-                                val dW = dx / density.density
-                                val dH = dy / density.density
-                                val newW = (curr.widthDp + dW).coerceAtLeast(minW)
-                                val newH = (curr.heightDp - dH).coerceAtLeast(minH)
-                                val actualDH = curr.heightDp - newH
-                                items[index] = curr.copy(
-                                    y = curr.y + actualDH * density.density,
-                                    widthDp = newW,
-                                    heightDp = newH
-                                )
-                            },
-                            onDragEnd = { StorageManager.saveItems(context, items) }
-                        )
+                        ResizeCornerHandle(Alignment.BottomStart, { dx, dy ->
+                            val curr = items[index]
+                            val newW = (curr.widthDp - dx / density.density).coerceAtLeast(minW)
+                            val newH = (curr.heightDp + dy / density.density).coerceAtLeast(minH)
+                            items[index] = curr.copy(
+                                x = curr.x + (curr.widthDp - newW) * density.density,
+                                widthDp = newW,
+                                heightDp = newH
+                            )
+                        }) { StorageManager.saveItems(context, items) }
 
-                        ResizeCornerHandle(
-                            alignment = Alignment.BottomStart,
-                            onDragDelta = { dx, dy ->
-                                val curr = items[index]
-                                val dW = dx / density.density
-                                val dH = dy / density.density
-                                val newW = (curr.widthDp - dW).coerceAtLeast(minW)
-                                val newH = (curr.heightDp + dH).coerceAtLeast(minH)
-                                val actualDW = curr.widthDp - newW
-                                items[index] = curr.copy(
-                                    x = curr.x + actualDW * density.density,
-                                    widthDp = newW,
-                                    heightDp = newH
-                                )
-                            },
-                            onDragEnd = { StorageManager.saveItems(context, items) }
-                        )
-
-                        ResizeCornerHandle(
-                            alignment = Alignment.BottomEnd,
-                            onDragDelta = { dx, dy ->
-                                val curr = items[index]
-                                val dW = dx / density.density
-                                val dH = dy / density.density
-                                items[index] = curr.copy(
-                                    widthDp = (curr.widthDp + dW).coerceAtLeast(minW),
-                                    heightDp = (curr.heightDp + dH).coerceAtLeast(minH)
-                                )
-                            },
-                            onDragEnd = { StorageManager.saveItems(context, items) }
-                        )
+                        ResizeCornerHandle(Alignment.BottomEnd, { dx, dy ->
+                            val curr = items[index]
+                            items[index] = curr.copy(
+                                widthDp = (curr.widthDp + dx / density.density).coerceAtLeast(minW),
+                                heightDp = (curr.heightDp + dy / density.density).coerceAtLeast(minH)
+                            )
+                        }) { StorageManager.saveItems(context, items) }
                     }
                 }
             }
         }
 
-        // Tracciato Lazo
-        if (lassoPoints.size > 1) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val path = Path().apply {
-                    moveTo(lassoPoints.first().x, lassoPoints.first().y)
-                    for (i in 1 until lassoPoints.size) {
-                        lineTo(lassoPoints[i].x, lassoPoints[i].y)
+        // LIVELLO 3: STRUMENTO LAZO (SOLO QUANDO ATTIVO)
+        if (activeTool == CanvasTool.LASSO) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { start -> lassoPoints.clear(); lassoPoints.add(start) },
+                            onDrag = { change, _ -> change.consume(); lassoPoints.add(change.position) },
+                            onDragEnd = {
+                                if (lassoPoints.size > 2) {
+                                    selectedIds.clear()
+                                    for (obj in items) {
+                                        val left = obj.x * zoomScale + cameraOffset.x
+                                        val top = obj.y * zoomScale + cameraOffset.y
+                                        val right = left + obj.widthDp * density.density * zoomScale
+                                        val bottom = top + obj.heightDp * density.density * zoomScale
+                                        val center = Offset((left + right) / 2f, (top + bottom) / 2f)
+                                        if (isPointInPolygon(center, lassoPoints)) selectedIds.add(obj.id)
+                                    }
+                                }
+                                lassoPoints.clear()
+                                activeTool = if (selectedIds.isNotEmpty()) CanvasTool.SELECT else CanvasTool.PAN
+                            }
+                        )
                     }
-                    close()
+            ) {
+                if (lassoPoints.size > 1) {
+                    val path = Path().apply {
+                        moveTo(lassoPoints.first().x, lassoPoints.first().y)
+                        for (i in 1 until lassoPoints.size) lineTo(lassoPoints[i].x, lassoPoints[i].y)
+                        close()
+                    }
+                    drawPath(path, Color(0x2E38BDF8))
+                    drawPath(path, Color(0xFF38BDF8), style = Stroke(width = 4f))
                 }
-                drawPath(path = path, color = Color(0x2E38BDF8))
-                drawPath(path = path, color = Color(0xFF38BDF8), style = Stroke(width = 4f))
             }
         }
 
-        // HUD superiore
+        // LIVELLO 4: HUD SUPERIORE
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -1938,15 +1519,11 @@ fun CanvasLauncherApp(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = Color(0xB8161922)
-            ) {
+            Surface(shape = RoundedCornerShape(14.dp), color = Color(0xB8161922)) {
                 val posX = (-cameraOffset.x / zoomScale).roundToInt()
                 val posY = (-cameraOffset.y / zoomScale).roundToInt()
-                val zoomPct = (zoomScale * 100).roundToInt()
                 Text(
-                    text = "X:$posX  Y:$posY  •  $zoomPct%",
+                    text = "X:$posX  Y:$posY  •  ${(zoomScale * 100).roundToInt()}%",
                     color = Color(0xFFCBD5E1),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
@@ -1955,15 +1532,12 @@ fun CanvasLauncherApp(
             }
 
             if (resizingItemId != null) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0xFF0284C7)
-                ) {
+                Surface(shape = RoundedCornerShape(14.dp), color = Color(0xFF0284C7)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
                     ) {
-                        Text("Trascina gli angoli", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Trascina angoli", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.width(6.dp))
                         TextButton(
                             onClick = { resizingItemId = null },
@@ -1975,66 +1549,31 @@ fun CanvasLauncherApp(
                     }
                 }
             } else if (selectedIds.isNotEmpty()) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0xFF1E3A8A)
-                ) {
+                Surface(shape = RoundedCornerShape(14.dp), color = Color(0xFF1E3A8A)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
                     ) {
-                        Text(
-                            text = "${selectedIds.size} sel.",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text("${selectedIds.size} sel.", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         if (selectedIds.size > 1) {
                             Spacer(modifier = Modifier.width(8.dp))
                             TextButton(
                                 onClick = { groupSelectedIntoSession() },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp),
                                 modifier = Modifier.height(28.dp)
                             ) {
-                                Text("Crea Sessione", color = Color(0xFF6EE7B7), fontSize = 12.sp)
+                                Text("Sessione", color = Color(0xFF6EE7B7), fontSize = 12.sp)
                             }
                         }
-                        IconButton(
-                            onClick = { selectedIds.clear() },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Deseleziona",
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp)
-                            )
+                        IconButton(onClick = { selectedIds.clear() }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.Close, "Deseleziona", tint = Color.White, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
             }
         }
 
-        // Cursore Visivo
-        if (activeTool == CanvasTool.SELECT || activeTool == CanvasTool.LASSO) {
-            Canvas(
-                modifier = Modifier
-                    .offset { IntOffset(cursorPos.x.roundToInt(), cursorPos.y.roundToInt()) }
-                    .size(26.dp)
-            ) {
-                val pointerPath = Path().apply {
-                    moveTo(0f, 0f)
-                    lineTo(0f, 38f)
-                    lineTo(11f, 29f)
-                    lineTo(26f, 29f)
-                    close()
-                }
-                drawPath(path = pointerPath, color = Color.White)
-                drawPath(path = pointerPath, color = Color(0xFF0F172A), style = Stroke(width = 3f))
-            }
-        }
-
-        // --- BARRA STRUMENTI INFERIORE ---
+        // LIVELLO 5: BARRA STRUMENTI INFERIORE (INDIPENDENTE E SEMPRE CLICCABILE)
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -2052,8 +1591,7 @@ fun CanvasLauncherApp(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // 1. TASTO (0,0) PRIMA DI TUTTI DI FIANCO A "TELA"
-                // Tocco singolo -> torna a (0,0) | Pressione prolungata -> salva punto corrente & elenco coordinate
+                // Tasto (0,0) prima di tutti di fianco a "Tela"
                 Box {
                     Box(
                         modifier = Modifier
@@ -2065,18 +1603,11 @@ fun CanvasLauncherApp(
                                     cameraOffset = Offset.Zero
                                     zoomScale = 1f
                                 },
-                                onLongClick = {
-                                    showWaypointsMenu = true
-                                }
+                                onLongClick = { showWaypointsMenu = true }
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.MyLocation,
-                            contentDescription = "Coordinate 0,0 e Punti Salvati",
-                            tint = Color(0xFF38BDF8),
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Rounded.MyLocation, "0,0 e Punti Salvati", tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
                     }
 
                     DropdownMenu(
@@ -2085,49 +1616,32 @@ fun CanvasLauncherApp(
                         containerColor = Color(0xFF1C202B)
                     ) {
                         DropdownMenuItem(
-                            leadingIcon = {
-                                Icon(Icons.Rounded.AddLocationAlt, null, tint = Color(0xFF34D399))
-                            },
+                            leadingIcon = { Icon(Icons.Rounded.AddLocationAlt, null, tint = Color(0xFF34D399)) },
                             text = {
-                                val currX = (-cameraOffset.x / zoomScale).roundToInt()
-                                val currY = (-cameraOffset.y / zoomScale).roundToInt()
-                                Text(
-                                    text = "Salva punto corrente (X:$currX, Y:$currY)",
-                                    color = Color(0xFF34D399),
-                                    fontWeight = FontWeight.Bold
-                                )
+                                val cx = (-cameraOffset.x / zoomScale).roundToInt()
+                                val cy = (-cameraOffset.y / zoomScale).roundToInt()
+                                Text("Salva punto corrente (X:$cx, Y:$cy)", color = Color(0xFF34D399), fontWeight = FontWeight.Bold)
                             },
                             onClick = {
                                 showWaypointsMenu = false
-                                val currX = (-cameraOffset.x / zoomScale).roundToInt()
-                                val currY = (-cameraOffset.y / zoomScale).roundToInt()
-                                newWaypointName = "Punto ${savedWaypoints.size + 1} (X:$currX, Y:$currY)"
+                                val cx = (-cameraOffset.x / zoomScale).roundToInt()
+                                val cy = (-cameraOffset.y / zoomScale).roundToInt()
+                                newWaypointName = "Punto ${savedWaypoints.size + 1} (X:$cx, Y:$cy)"
                                 showSaveWaypointDialog = true
                             }
                         )
-
                         if (savedWaypoints.isNotEmpty()) {
                             HorizontalDivider(color = Color(0xFF2E3546))
                             savedWaypoints.forEach { wp ->
-                                val wpX = (-wp.offsetX / wp.zoomScale).roundToInt()
-                                val wpY = (-wp.offsetY / wp.zoomScale).roundToInt()
+                                val wx = (-wp.offsetX / wp.zoomScale).roundToInt()
+                                val wy = (-wp.offsetY / wp.zoomScale).roundToInt()
                                 DropdownMenuItem(
-                                    leadingIcon = {
-                                        Icon(Icons.Rounded.Place, null, tint = Color(0xFF60A5FA))
-                                    },
+                                    leadingIcon = { Icon(Icons.Rounded.Place, null, tint = Color(0xFF60A5FA)) },
                                     text = {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(wp.name, color = Color.White, fontSize = 13.sp)
-                                                Text(
-                                                    text = "X:$wpX  Y:$wpY  •  ${(wp.zoomScale * 100).roundToInt()}%",
-                                                    color = Color(0xFF94A3B8),
-                                                    fontSize = 11.sp
-                                                )
+                                                Text("X:$wx  Y:$wy  •  ${(wp.zoomScale * 100).roundToInt()}%", color = Color(0xFF94A3B8), fontSize = 11.sp)
                                             }
                                             IconButton(
                                                 onClick = {
@@ -2136,12 +1650,7 @@ fun CanvasLauncherApp(
                                                 },
                                                 modifier = Modifier.size(24.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.Close,
-                                                    contentDescription = "Elimina coordinata",
-                                                    tint = Color(0xFFF87171),
-                                                    modifier = Modifier.size(14.dp)
-                                                )
+                                                Icon(Icons.Rounded.Close, "Rimuovi", tint = Color(0xFFF87171), modifier = Modifier.size(14.dp))
                                             }
                                         }
                                     },
@@ -2156,96 +1665,37 @@ fun CanvasLauncherApp(
                     }
                 }
 
-                // 2. STRUMENTI PRINCIPALI: TELA, USA (BLOCCA TELA), CURSORE, LAZO
-                ToolButton(
-                    icon = Icons.Rounded.OpenWith,
-                    label = "Tela",
-                    selected = activeTool == CanvasTool.PAN,
-                    onClick = { activeTool = CanvasTool.PAN }
-                )
-                ToolButton(
-                    icon = Icons.Rounded.TouchApp,
-                    label = "Usa",
-                    selected = activeTool == CanvasTool.INTERACT,
-                    onClick = { activeTool = CanvasTool.INTERACT }
-                )
-                ToolButton(
-                    icon = Icons.Rounded.NearMe,
-                    label = "Cursore",
-                    selected = activeTool == CanvasTool.SELECT,
-                    onClick = { activeTool = CanvasTool.SELECT }
-                )
-                ToolButton(
-                    icon = Icons.Rounded.Gesture,
-                    label = "Lazo",
-                    selected = activeTool == CanvasTool.LASSO,
-                    onClick = { activeTool = CanvasTool.LASSO }
-                )
+                ToolButton(Icons.Rounded.OpenWith, "Tela", activeTool == CanvasTool.PAN) { activeTool = CanvasTool.PAN }
+                ToolButton(Icons.Rounded.TouchApp, "Usa", activeTool == CanvasTool.INTERACT) { activeTool = CanvasTool.INTERACT }
+                ToolButton(Icons.Rounded.NearMe, "Cursore", activeTool == CanvasTool.SELECT) { activeTool = CanvasTool.SELECT }
+                ToolButton(Icons.Rounded.Gesture, "Lazo", activeTool == CanvasTool.LASSO) { activeTool = CanvasTool.LASSO }
 
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .height(26.dp)
-                        .background(Color(0xFF2E3444))
-                )
+                Box(modifier = Modifier.width(1.dp).height(26.dp).background(Color(0xFF2E3444)))
 
-                ActionPillButton(
-                    icon = Icons.Rounded.Apps,
-                    label = "App",
-                    containerColor = Color(0xFF2563EB),
-                    onClick = { showAppDrawer = true }
-                )
-                ActionPillButton(
-                    icon = Icons.Rounded.Public,
-                    label = "Web",
-                    containerColor = Color(0xFF0D9488),
-                    onClick = { showWebAppDialog = true }
-                )
-                ActionPillButton(
-                    icon = Icons.Rounded.NoteAdd,
-                    label = "Nota",
-                    containerColor = Color(0xFF1E293B),
-                    onClick = {
-                        val worldX = (-cameraOffset.x + 190f) / zoomScale
-                        val worldY = (-cameraOffset.y + 300f) / zoomScale
-                        items.add(
-                            CanvasItem(
-                                id = UUID.randomUUID().toString(),
-                                title = "Nuova Nota",
-                                content = "Tocca per scrivere...",
-                                x = worldX,
-                                y = worldY,
-                                widthDp = 210f,
-                                heightDp = 140f,
-                                colorHex = 0x00000000L,
-                                type = ItemType.NOTE
-                            )
+                ActionPillButton(Icons.Rounded.Apps, "App", Color(0xFF2563EB)) { showAppDrawer = true }
+                ActionPillButton(Icons.Rounded.Public, "Web", Color(0xFF0D9488)) { showWebAppDialog = true }
+                ActionPillButton(Icons.Rounded.NoteAdd, "Nota", Color(0xFF1E293B)) {
+                    items.add(
+                        CanvasItem(
+                            id = UUID.randomUUID().toString(),
+                            title = "Nuova Nota",
+                            content = "Tocca per scrivere...",
+                            x = (-cameraOffset.x + 190f) / zoomScale,
+                            y = (-cameraOffset.y + 300f) / zoomScale,
+                            widthDp = 210f,
+                            heightDp = 140f,
+                            type = ItemType.NOTE
                         )
-                        StorageManager.saveItems(context, items)
-                    }
-                )
-                ActionPillButton(
-                    icon = Icons.Rounded.AddPhotoAlternate,
-                    label = "Foto",
-                    containerColor = Color(0xFF1E293B),
-                    onClick = { showPhotoChoiceDialog = true }
-                )
-                ActionPillButton(
-                    icon = Icons.Rounded.Mic,
-                    label = "Audio",
-                    containerColor = Color(0xFF1E293B),
-                    onClick = { showAudioDialog = true }
-                )
-                ActionPillButton(
-                    icon = Icons.Rounded.AttachFile,
-                    label = "File",
-                    containerColor = Color(0xFF1E293B),
-                    onClick = { fileLinkPickerLauncher.launch(arrayOf("*/*")) }
-                )
+                    )
+                    StorageManager.saveItems(context, items)
+                }
+                ActionPillButton(Icons.Rounded.AddPhotoAlternate, "Foto", Color(0xFF1E293B)) { showPhotoChoiceDialog = true }
+                ActionPillButton(Icons.Rounded.Mic, "Audio", Color(0xFF1E293B)) { showAudioDialog = true }
+                ActionPillButton(Icons.Rounded.AttachFile, "File", Color(0xFF1E293B)) { fileLinkPickerLauncher.launch(arrayOf("*/*")) }
             }
         }
 
-        // --- DIALOG SALVA COORDINATA CORRENTE ---
+        // DIALOG SALVA COORDINATA
         if (showSaveWaypointDialog) {
             AlertDialog(
                 onDismissRequest = { showSaveWaypointDialog = false },
@@ -2258,66 +1708,50 @@ fun CanvasLauncherApp(
                         onValueChange = { newWaypointName = it },
                         label = { Text("Nome coordinata") },
                         singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
-                        )
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                     )
                 },
                 confirmButton = {
-                    Button(
-                        onClick = {
-                            savedWaypoints.add(
-                                CanvasWaypoint(
-                                    id = UUID.randomUUID().toString(),
-                                    name = newWaypointName.ifBlank { "Punto salvato" },
-                                    offsetX = cameraOffset.x,
-                                    offsetY = cameraOffset.y,
-                                    zoomScale = zoomScale
-                                )
+                    Button(onClick = {
+                        savedWaypoints.add(
+                            CanvasWaypoint(
+                                id = UUID.randomUUID().toString(),
+                                name = newWaypointName.ifBlank { "Punto salvato" },
+                                offsetX = cameraOffset.x,
+                                offsetY = cameraOffset.y,
+                                zoomScale = zoomScale
                             )
-                            StorageManager.saveWaypoints(context, savedWaypoints)
-                            showSaveWaypointDialog = false
-                            Toast.makeText(context, "Posizione salvata", Toast.LENGTH_SHORT).show()
-                        }
-                    ) {
-                        Text("Salva")
-                    }
+                        )
+                        StorageManager.saveWaypoints(context, savedWaypoints)
+                        showSaveWaypointDialog = false
+                        Toast.makeText(context, "Posizione salvata", Toast.LENGTH_SHORT).show()
+                    }) { Text("Salva") }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showSaveWaypointDialog = false }) {
-                        Text("Annulla", color = Color(0xFF94A3B8))
-                    }
+                    TextButton(onClick = { showSaveWaypointDialog = false }) { Text("Annulla", color = Color(0xFF94A3B8)) }
                 }
             )
         }
 
-        // --- MENU CONTESTUALE SEPARATO: ELEMENTO vs SFONDO VUOTO ---
+        // MENU CONTESTUALE
         DropdownMenu(
             expanded = showContextMenu,
             onDismissRequest = { showContextMenu = false },
             containerColor = Color(0xFF1C202B),
-            offset = with(density) {
-                DpOffset(contextMenuScreenPos.x.toDp(), contextMenuScreenPos.y.toDp())
-            }
+            offset = with(density) { DpOffset(contextMenuScreenPos.x.toDp(), contextMenuScreenPos.y.toDp()) }
         ) {
             if (targetItemForMenu != null) {
                 val item = targetItemForMenu!!
-
                 if (item.type == ItemType.APP_SHORTCUT && item.packageName != null) {
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Rounded.PictureInPictureAlt, null, tint = Color(0xFF38BDF8)) },
                         text = { Text("Apri in Finestra sulla Tela", color = Color(0xFF38BDF8)) },
                         onClick = {
-                            val appObj = appList.find { it.packageName == item.packageName }
-                            if (appObj != null) {
-                                openAppAsCanvasWindow(appObj, item.x + 40f, item.y + 40f)
-                            }
+                            appList.find { it.packageName == item.packageName }?.let { openAppAsCanvasWindow(it, item.x + 40f, item.y + 40f) }
                             showContextMenu = false
                         }
                     )
                 }
-
                 if (item.type != ItemType.APP_WINDOW && item.type != ItemType.WEB_APP && item.type != ItemType.SYSTEM_WIDGET) {
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Rounded.Edit, null, tint = Color.White) },
@@ -2331,41 +1765,18 @@ fun CanvasLauncherApp(
                         }
                     )
                 }
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.AspectRatio, null, tint = Color(0xFF38BDF8)) },
-                    text = { Text("Ridimensiona (Trascina Angoli)", color = Color(0xFF38BDF8)) },
-                    onClick = {
-                        resizingItemId = item.id
-                        showContextMenu = false
-                    }
+                    text = { Text("Ridimensiona", color = Color(0xFF38BDF8)) },
+                    onClick = { resizingItemId = item.id; showContextMenu = false }
                 )
-
-                if (selectedIds.size > 1) {
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Rounded.Workspaces, null, tint = Color(0xFF34D399)) },
-                        text = { Text("Cattura (${selectedIds.size}) in Sessione", color = Color(0xFF34D399)) },
-                        onClick = {
-                            groupSelectedIntoSession()
-                            showContextMenu = false
-                        }
-                    )
-                }
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = Color(0xFFF87171)) },
                     text = { Text("Elimina", color = Color(0xFFF87171)) },
                     onClick = {
-                        if (selectedIds.contains(item.id) && selectedIds.size > 1) {
-                            items.filter { selectedIds.contains(it.id) }
-                                .forEach { cleanupItemResources(it, appWidgetHost) }
-                            items.removeAll { selectedIds.contains(it.id) }
-                            selectedIds.clear()
-                        } else {
-                            cleanupItemResources(item, appWidgetHost)
-                            items.remove(item)
-                            selectedIds.remove(item.id)
-                        }
+                        cleanupItemResources(item, appWidgetHost)
+                        items.remove(item)
+                        selectedIds.remove(item.id)
                         if (resizingItemId == item.id) resizingItemId = null
                         StorageManager.saveItems(context, items)
                         showContextMenu = false
@@ -2374,34 +1785,21 @@ fun CanvasLauncherApp(
             } else {
                 val worldX = (contextMenuScreenPos.x - cameraOffset.x) / zoomScale
                 val worldY = (contextMenuScreenPos.y - cameraOffset.y) / zoomScale
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Public, null, tint = Color(0xFF34D399)) },
                     text = { Text("Aggiungi Web App / Sito", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        showWebAppDialog = true
-                    }
+                    onClick = { showContextMenu = false; showWebAppDialog = true }
                 )
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Widgets, null, tint = Color(0xFFF472B6)) },
                     text = { Text("Aggiungi Widget di Sistema", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        onRequestPickSystemWidget()
-                    }
+                    onClick = { showContextMenu = false; onRequestPickSystemWidget() }
                 )
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Bolt, null, tint = Color(0xFFFB923C)) },
                     text = { Text("Aggiungi Scorciatoia di Sistema", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        onRequestPickSystemShortcut()
-                    }
+                    onClick = { showContextMenu = false; onRequestPickSystemShortcut() }
                 )
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.NoteAdd, null, tint = Color(0xFFFBBF24)) },
                     text = { Text("Nuova Nota", color = Color.White) },
@@ -2415,7 +1813,6 @@ fun CanvasLauncherApp(
                                 y = worldY,
                                 widthDp = 210f,
                                 heightDp = 140f,
-                                colorHex = 0x00000000L,
                                 type = ItemType.NOTE
                             )
                         )
@@ -2423,93 +1820,45 @@ fun CanvasLauncherApp(
                         showContextMenu = false
                     }
                 )
-
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Rounded.AddPhotoAlternate, null, tint = Color(0xFFA78BFA)) },
-                    text = { Text("Aggiungi Foto / Scatta", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        showPhotoChoiceDialog = true
-                    }
-                )
-
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Rounded.Mic, null, tint = Color(0xFFF43F5E)) },
-                    text = { Text("Aggiungi Audio / Memo Vocale", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        showAudioDialog = true
-                    }
-                )
-
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Rounded.AttachFile, null, tint = Color(0xFF2DD4BF)) },
-                    text = { Text("Collega File dall'Archivio", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        fileLinkPickerLauncher.launch(arrayOf("*/*"))
-                    }
-                )
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Wallpaper, null, tint = Color(0xFF38BDF8)) },
                     text = { Text("Cambia Sfondo", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        openSystemWallpaperChooser()
-                    }
+                    onClick = { showContextMenu = false; openSystemWallpaperChooser() }
                 )
-
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Settings, null, tint = Color(0xFF94A3B8)) },
                     text = { Text("Impostazioni Launcher", color = Color.White) },
                     onClick = {
                         showContextMenu = false
+                        liveShizukuReady = VirtualDisplayWindowManager.isShizukuReady()
                         showSettingsDialog = true
                     }
                 )
             }
         }
 
-        // --- DIALOG AGGIUNGI WEB APP (CON OPZIONI RAPIDE PERSONALIZZABILI, ADBLOCK E SCELTA BROWSER) ---
         if (showWebAppDialog) {
             WebAppLauncherDialog(
                 quickPresets = webQuickPresets,
                 installedBrowsers = installedBrowsers,
                 onSaveQuickPreset = { presetName, presetUrl, browserPkg ->
                     val normalizedUrl = normalizeWebUrl(presetUrl)
-                    val label = presetName.ifBlank {
-                        normalizedUrl.removePrefix("https://").removePrefix("http://").take(20)
-                    }
-                    webQuickPresets.add(
-                        WebQuickPreset(
-                            id = UUID.randomUUID().toString(),
-                            name = label,
-                            url = normalizedUrl,
-                            browserPackage = browserPkg
-                        )
-                    )
+                    val label = presetName.ifBlank { normalizedUrl.removePrefix("https://").removePrefix("http://").take(20) }
+                    webQuickPresets.add(WebQuickPreset(UUID.randomUUID().toString(), label, normalizedUrl, browserPkg))
                     StorageManager.saveWebQuickPresets(context, webQuickPresets)
-                    Toast.makeText(context, "Aggiunto ai rapidi", Toast.LENGTH_SHORT).show()
                 },
                 onDeleteQuickPreset = { preset ->
                     webQuickPresets.remove(preset)
                     StorageManager.saveWebQuickPresets(context, webQuickPresets)
                 },
                 onAddWebApp = { title, rawUrl, browserPkg, adBlockOn ->
-                    openWebAppOnCanvas(
-                        title = title,
-                        rawUrl = rawUrl,
-                        browserPackage = browserPkg,
-                        adBlockEnabled = adBlockOn
-                    )
+                    openWebAppOnCanvas(title, rawUrl, browserPkg, adBlockOn)
                     showWebAppDialog = false
                 },
                 onDismiss = { showWebAppDialog = false }
             )
         }
 
-        // --- SCELTA FOTO ---
         if (showPhotoChoiceDialog) {
             AlertDialog(
                 onDismissRequest = { showPhotoChoiceDialog = false },
@@ -2519,10 +1868,7 @@ fun CanvasLauncherApp(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Button(
-                            onClick = {
-                                showPhotoChoiceDialog = false
-                                launchQuickCamera()
-                            },
+                            onClick = { showPhotoChoiceDialog = false; launchQuickCamera() },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -2531,10 +1877,7 @@ fun CanvasLauncherApp(
                             Text("Scatta foto al volo")
                         }
                         OutlinedButton(
-                            onClick = {
-                                showPhotoChoiceDialog = false
-                                galleryPickerLauncher.launch("image/*")
-                            },
+                            onClick = { showPhotoChoiceDialog = false; galleryPickerLauncher.launch("image/*") },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Icon(Icons.Rounded.PhotoLibrary, null, modifier = Modifier.size(18.dp))
@@ -2544,44 +1887,34 @@ fun CanvasLauncherApp(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { showPhotoChoiceDialog = false }) {
-                        Text("Annulla", color = Color(0xFF94A3B8))
-                    }
+                    TextButton(onClick = { showPhotoChoiceDialog = false }) { Text("Annulla", color = Color(0xFF94A3B8)) }
                 }
             )
         }
 
-        // --- DIALOG AUDIO ---
         if (showAudioDialog) {
             AudioRecorderDialog(
                 onAudioSaved = { filePath, label ->
-                    val worldX = (-cameraOffset.x + 180f) / zoomScale
-                    val worldY = (-cameraOffset.y + 300f) / zoomScale
                     items.add(
                         CanvasItem(
                             id = UUID.randomUUID().toString(),
                             title = label,
                             audioPath = filePath,
-                            x = worldX,
-                            y = worldY,
+                            x = (-cameraOffset.x + 180f) / zoomScale,
+                            y = (-cameraOffset.y + 300f) / zoomScale,
                             widthDp = 115f,
                             heightDp = 105f,
-                            colorHex = 0x00000000L,
                             type = ItemType.AUDIO_MEMO
                         )
                     )
                     StorageManager.saveItems(context, items)
                     showAudioDialog = false
                 },
-                onPickFromStorage = {
-                    showAudioDialog = false
-                    audioFilePickerLauncher.launch("audio/*")
-                },
+                onPickFromStorage = { showAudioDialog = false; audioFilePickerLauncher.launch("audio/*") },
                 onDismiss = { showAudioDialog = false }
             )
         }
 
-        // --- FINESTRA MODIFICA ---
         if (editingItem != null) {
             AlertDialog(
                 onDismissRequest = { editingItem = null },
@@ -2595,10 +1928,7 @@ fun CanvasLauncherApp(
                             onValueChange = { editTitleText = it },
                             label = { Text("Nome") },
                             singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White
-                            )
+                            colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                         )
                         if (editingItem?.type == ItemType.NOTE) {
                             OutlinedTextField(
@@ -2607,12 +1937,8 @@ fun CanvasLauncherApp(
                                 label = { Text("Testo Nota") },
                                 minLines = 4,
                                 maxLines = 8,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                )
+                                colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                             )
-                            Text("Sfondo nota (opzionale)", color = Color(0xFF94A3B8), fontSize = 12.sp)
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 ElementColorOptions.forEach { (hex, _) ->
                                     Box(
@@ -2636,27 +1962,18 @@ fun CanvasLauncherApp(
                     Button(onClick = {
                         val idx = items.indexOfFirst { it.id == editingItem?.id }
                         if (idx >= 0) {
-                            items[idx] = items[idx].copy(
-                                title = editTitleText,
-                                content = editContentText,
-                                colorHex = editColorHex
-                            )
+                            items[idx] = items[idx].copy(title = editTitleText, content = editContentText, colorHex = editColorHex)
                             StorageManager.saveItems(context, items)
                         }
                         editingItem = null
-                    }) {
-                        Text("Salva")
-                    }
+                    }) { Text("Salva") }
                 },
                 dismissButton = {
-                    TextButton(onClick = { editingItem = null }) {
-                        Text("Annulla", color = Color(0xFF94A3B8))
-                    }
+                    TextButton(onClick = { editingItem = null }) { Text("Annulla", color = Color(0xFF94A3B8)) }
                 }
             )
         }
 
-        // --- DIALOG SESSIONE ---
         if (activeSessionDialogItem != null) {
             val session = activeSessionDialogItem!!
             AlertDialog(
@@ -2669,71 +1986,46 @@ fun CanvasLauncherApp(
                         session.sessionPackages.forEach { pkg ->
                             val label = appList.find { it.packageName == pkg }?.label ?: pkg
                             Button(
-                                onClick = {
-                                    launchPackage(context, pkg)
-                                    activeSessionDialogItem = null
-                                },
+                                onClick = { launchPackage(context, pkg); activeSessionDialogItem = null },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
                                 modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Apri $label")
-                            }
+                            ) { Text("Apri $label") }
                         }
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { activeSessionDialogItem = null }) {
-                        Text("Chiudi", color = Color(0xFF94A3B8))
-                    }
+                    TextButton(onClick = { activeSessionDialogItem = null }) { Text("Chiudi", color = Color(0xFF94A3B8)) }
                 }
             )
         }
 
-        // --- IMPOSTAZIONI LAUNCHER ---
         if (showSettingsDialog) {
             LauncherSettingsDialog(
-                shizukuReady = shizukuReady,
-                onRequestShizukuPermission = onRequestShizukuPermission,
+                shizukuReady = liveShizukuReady,
+                onRequestShizukuPermission = {
+                    onRequestShizukuPermission()
+                    liveShizukuReady = VirtualDisplayWindowManager.isShizukuReady()
+                },
                 backgroundAlpha = backgroundAlpha,
-                onBackgroundAlphaChange = { newAlpha ->
-                    backgroundAlpha = newAlpha
-                    StorageManager.setBackgroundAlpha(context, newAlpha)
-                },
+                onBackgroundAlphaChange = { backgroundAlpha = it; StorageManager.setBackgroundAlpha(context, it) },
                 drawerAlpha = drawerAlpha,
-                onDrawerAlphaChange = { newDrawerAlpha ->
-                    drawerAlpha = newDrawerAlpha
-                    StorageManager.setDrawerAlpha(context, newDrawerAlpha)
-                },
+                onDrawerAlphaChange = { drawerAlpha = it; StorageManager.setDrawerAlpha(context, it) },
                 hapticStrength = hapticStrength,
-                onHapticStrengthChange = { newStrength ->
-                    hapticStrength = newStrength
-                    StorageManager.setDrawerHapticStrength(context, newStrength)
-                },
+                onHapticStrengthChange = { hapticStrength = it; StorageManager.setDrawerHapticStrength(context, it) },
                 statusBarMode = statusBarMode,
-                onStatusBarModeChange = { newMode ->
-                    statusBarMode = newMode
-                    StorageManager.setStatusBarMode(context, newMode)
-                    onStatusBarModeChanged(newMode)
-                },
+                onStatusBarModeChange = { statusBarMode = it; StorageManager.setStatusBarMode(context, it); onStatusBarModeChanged(it) },
                 showSelfInDrawer = showSelfInDrawer,
-                onShowSelfInDrawerChange = { newShow ->
-                    showSelfInDrawer = newShow
-                    StorageManager.setShowSelfInDrawer(context, newShow)
-                    onShowSelfInDrawerChanged(newShow)
-                },
+                onShowSelfInDrawerChange = { showSelfInDrawer = it; StorageManager.setShowSelfInDrawer(context, it); onShowSelfInDrawerChanged(it) },
                 onAddSystemShortcut = { preset ->
-                    val worldX = (-cameraOffset.x + 190f) / zoomScale
-                    val worldY = (-cameraOffset.y + 300f) / zoomScale
                     items.add(
                         CanvasItem(
                             id = UUID.randomUUID().toString(),
                             title = preset.title,
                             shortcutAction = preset.action,
-                            x = worldX,
-                            y = worldY,
+                            x = (-cameraOffset.x + 190f) / zoomScale,
+                            y = (-cameraOffset.y + 300f) / zoomScale,
                             widthDp = 105f,
                             heightDp = 100f,
-                            colorHex = 0x00000000L,
                             type = ItemType.SYSTEM_SHORTCUT
                         )
                     )
@@ -2743,46 +2035,35 @@ fun CanvasLauncherApp(
                 onChangeWallpaper = { openSystemWallpaperChooser() },
                 onAddSystemWidget = { onRequestPickSystemWidget() },
                 onRestoreGuideNote = {
-                    val worldX = (-cameraOffset.x + 110f) / zoomScale
-                    val worldY = (-cameraOffset.y + 190f) / zoomScale
-                    items.add(StorageManager.createDefaultGuideNote(worldX, worldY))
+                    items.add(StorageManager.createDefaultGuideNote((-cameraOffset.x + 110f) / zoomScale, (-cameraOffset.y + 190f) / zoomScale))
                     StorageManager.saveItems(context, items)
                 },
                 onDismiss = { showSettingsDialog = false }
             )
         }
 
-        // --- APP DRAWER OVERLAY ---
         if (showAppDrawer) {
             AppDrawerOverlay(
                 appList = appList,
+                showSelfInDrawer = showSelfInDrawer,
                 drawerAlpha = drawerAlpha,
                 hapticStrength = hapticStrength,
-                onLaunchApp = { app ->
-                    showAppDrawer = false
-                    launchApp(context, app)
-                },
-                onOpenAppInCanvasWindow = { app ->
-                    showAppDrawer = false
-                    openAppAsCanvasWindow(app)
-                },
+                onLaunchApp = { app -> showAppDrawer = false; launchApp(context, app) },
+                onOpenAppInCanvasWindow = { app -> showAppDrawer = false; openAppAsCanvasWindow(app) },
                 onAddAppsToCanvas = { selectedApps ->
                     val baseWorldX = (-cameraOffset.x + 120f) / zoomScale
                     val baseWorldY = (-cameraOffset.y + 240f) / zoomScale
                     selectedApps.forEachIndexed { idx, app ->
-                        val col = idx % 3
-                        val row = idx / 3
                         items.add(
                             CanvasItem(
                                 id = UUID.randomUUID().toString(),
                                 title = app.label,
                                 packageName = app.packageName,
-                                x = baseWorldX + col * 310f,
-                                y = baseWorldY + row * 310f,
+                                x = baseWorldX + (idx % 3) * 310f,
+                                y = baseWorldY + (idx / 3) * 310f,
                                 widthDp = 105f,
                                 heightDp = 105f,
-                                type = ItemType.APP_SHORTCUT,
-                                colorHex = 0x00000000L
+                                type = ItemType.APP_SHORTCUT
                             )
                         )
                     }
@@ -2797,45 +2078,27 @@ fun CanvasLauncherApp(
 
 private fun normalizeWebUrl(rawUrl: String): String {
     val trimmed = rawUrl.trim()
-    return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-        trimmed
-    } else if (trimmed.contains(".") && !trimmed.contains(" ")) {
-        "https://$trimmed"
-    } else {
-        "https://www.google.com/search?q=${Uri.encode(trimmed)}"
+    return when {
+        trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+        trimmed.contains(".") && !trimmed.contains(" ") -> "https://$trimmed"
+        else -> "https://www.google.com/search?q=${Uri.encode(trimmed)}"
     }
 }
 
 private fun queryInstalledBrowsers(context: Context): List<InstalledBrowserInfo> {
     val pm = context.packageManager
-    val testIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com"))
-    val resolved = pm.queryIntentActivities(testIntent, PackageManager.MATCH_ALL)
+    val resolved = pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com")), PackageManager.MATCH_ALL)
     val seen = mutableSetOf<String>()
-    val result = mutableListOf<InstalledBrowserInfo>()
-    for (info in resolved) {
-        val pkg = info.activityInfo?.packageName ?: continue
-        if (pkg == context.packageName || !seen.add(pkg)) continue
-        result.add(
-            InstalledBrowserInfo(
-                label = info.loadLabel(pm).toString(),
-                packageName = pkg,
-                icon = info.loadIcon(pm)
-            )
-        )
-    }
-    return result.sortedBy { it.label.lowercase() }
+    return resolved.mapNotNull { info ->
+        val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
+        if (pkg == context.packageName || !seen.add(pkg)) return@mapNotNull null
+        InstalledBrowserInfo(info.loadLabel(pm).toString(), pkg, info.loadIcon(pm))
+    }.sortedBy { it.label.lowercase() }
 }
 
 private fun cleanupItemResources(item: CanvasItem, appWidgetHost: AppWidgetHost) {
-    if (item.appWidgetId != -1) {
-        try {
-            appWidgetHost.deleteAppWidgetId(item.appWidgetId)
-        } catch (_: Exception) {
-        }
-    }
-    if (item.type == ItemType.APP_WINDOW ||
-        (item.type == ItemType.WEB_APP && !item.browserPackage.isNullOrBlank())
-    ) {
+    if (item.appWidgetId != -1) runCatching { appWidgetHost.deleteAppWidgetId(item.appWidgetId) }
+    if (item.type == ItemType.APP_WINDOW || (item.type == ItemType.WEB_APP && !item.browserPackage.isNullOrBlank())) {
         VirtualDisplayWindowManager.closeSession(item.id)
     }
     if (item.type == ItemType.WEB_APP && item.browserPackage.isNullOrBlank()) {
@@ -2858,65 +2121,46 @@ private fun createConfiguredWebView(
     isAdBlockEnabled: () -> Boolean,
     onAdBlocked: () -> Unit,
     onUrlOrTitleUpdated: (String, String) -> Unit
-): WebView {
-    return WebView(context).apply {
-        layoutParams = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-        try {
-            CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
-        } catch (_: Throwable) {
-        }
-        settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            databaseEnabled = true
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            setSupportZoom(true)
-            builtInZoomControls = true
-            displayZoomControls = false
-            setSupportMultipleWindows(false)
-            javaScriptCanOpenWindowsAutomatically = false
-            mediaPlaybackRequiresUserGesture = false
-            cacheMode = WebSettings.LOAD_DEFAULT
-        }
-        webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): WebResourceResponse? {
-                val reqUrl = request?.url?.toString()
-                if (reqUrl != null && isAdBlockEnabled() && AdBlockerEngine.isAdOrTrackerUrl(reqUrl)) {
-                    onAdBlocked()
-                    return AdBlockerEngine.createEmptyBlockedResponse()
-                }
-                return super.shouldInterceptRequest(view, request)
-            }
-
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                if (isAdBlockEnabled()) {
-                    view?.evaluateJavascript(AdBlockerEngine.COSMETIC_AD_HIDE_JS, null)
-                }
-                if (url != null) {
-                    onUrlOrTitleUpdated(url, view?.title ?: "")
-                }
-            }
-        }
-        webChromeClient = object : WebChromeClient() {
-            override fun onReceivedTitle(view: WebView?, title: String?) {
-                super.onReceivedTitle(view, title)
-                val currUrl = view?.url
-                if (!currUrl.isNullOrBlank() && !title.isNullOrBlank()) {
-                    onUrlOrTitleUpdated(currUrl, title)
-                }
-            }
-        }
-        val extraHeaders = mapOf("DNT" to "1", "Sec-GPC" to "1")
-        loadUrl(initialUrl, extraHeaders)
+): WebView = WebView(context).apply {
+    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+    runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(this, false) }
+    settings.apply {
+        javaScriptEnabled = true
+        domStorageEnabled = true
+        databaseEnabled = true
+        useWideViewPort = true
+        loadWithOverviewMode = true
+        setSupportZoom(true)
+        builtInZoomControls = true
+        displayZoomControls = false
+        setSupportMultipleWindows(false)
+        javaScriptCanOpenWindowsAutomatically = false
+        mediaPlaybackRequiresUserGesture = false
+        cacheMode = WebSettings.LOAD_DEFAULT
     }
+    webViewClient = object : WebViewClient() {
+        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+            val reqUrl = request?.url?.toString()
+            if (reqUrl != null && isAdBlockEnabled() && AdBlockerEngine.isAdOrTrackerUrl(reqUrl)) {
+                onAdBlocked()
+                return AdBlockerEngine.createEmptyBlockedResponse()
+            }
+            return super.shouldInterceptRequest(view, request)
+        }
+        override fun onPageFinished(view: WebView?, url: String?) {
+            super.onPageFinished(view, url)
+            if (isAdBlockEnabled()) view?.evaluateJavascript(AdBlockerEngine.COSMETIC_AD_HIDE_JS, null)
+            if (url != null) onUrlOrTitleUpdated(url, view?.title ?: "")
+        }
+    }
+    webChromeClient = object : WebChromeClient() {
+        override fun onReceivedTitle(view: WebView?, title: String?) {
+            super.onReceivedTitle(view, title)
+            val currUrl = view?.url
+            if (!currUrl.isNullOrBlank() && !title.isNullOrBlank()) onUrlOrTitleUpdated(currUrl, title)
+        }
+    }
+    loadUrl(initialUrl, mapOf("DNT" to "1", "Sec-GPC" to "1"))
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -2942,20 +2186,14 @@ private fun WebAppLauncherDialog(
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 460.dp)
-                    .verticalScroll(rememberScrollState())
+                modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState())
             ) {
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it },
                     label = { Text("URL o ricerca web") },
                     singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White
-                    ),
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -2963,20 +2201,11 @@ private fun WebAppLauncherDialog(
                     onValueChange = { title = it },
                     label = { Text("Nome finestra (opzionale)") },
                     singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White
-                    ),
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
                     modifier = Modifier.fillMaxWidth()
                 )
-
-                // Pulsante per salvare l'URL corrente tra le opzioni rapide
                 OutlinedButton(
-                    onClick = {
-                        if (url.isNotBlank() && url != "https://") {
-                            onSaveQuickPreset(title, url, selectedBrowserPkg)
-                        }
-                    },
+                    onClick = { if (url.isNotBlank() && url != "https://") onSaveQuickPreset(title, url, selectedBrowserPkg) },
                     enabled = url.isNotBlank() && url != "https://",
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -2985,42 +2214,23 @@ private fun WebAppLauncherDialog(
                     Text("Salva questo sito nei rapidi", fontSize = 12.sp)
                 }
 
-                // Scelta del motore / Browser (Launcher integrato con AdBlock vs Browser esterni sul telefono)
                 Text("Apri con:", color = Color(0xFF94A3B8), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
                 ) {
                     FilterChip(
                         selected = selectedBrowserPkg == null,
                         onClick = { selectedBrowserPkg = null },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Rounded.Shield,
-                                contentDescription = null,
-                                tint = Color(0xFFFB923C),
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
+                        leadingIcon = { Icon(Icons.Rounded.Shield, null, tint = Color(0xFFFB923C), modifier = Modifier.size(16.dp)) },
                         label = { Text("Launcher + AdBlock", fontSize = 12.sp) }
                     )
-
                     installedBrowsers.forEach { browser ->
-                        val iconBmp = remember(browser.packageName) {
-                            browser.icon.toBitmap(width = 48, height = 48).asImageBitmap()
-                        }
+                        val iconBmp = remember(browser.packageName) { browser.icon.toBitmap(48, 48).asImageBitmap() }
                         FilterChip(
                             selected = selectedBrowserPkg == browser.packageName,
                             onClick = { selectedBrowserPkg = browser.packageName },
-                            leadingIcon = {
-                                Image(
-                                    bitmap = iconBmp,
-                                    contentDescription = browser.label,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            },
+                            leadingIcon = { Image(bitmap = iconBmp, contentDescription = browser.label, modifier = Modifier.size(16.dp)) },
                             label = { Text(browser.label, fontSize = 12.sp) }
                         )
                     }
@@ -3032,49 +2242,27 @@ private fun WebAppLauncherDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = "Scudo AdBlock & Anti-Tracker",
-                            color = Color.White,
-                            fontSize = 12.sp
-                        )
-                        Switch(
-                            checked = adBlockEnabled,
-                            onCheckedChange = { adBlockEnabled = it }
-                        )
+                        Text("Scudo AdBlock & Anti-Tracker", color = Color.White, fontSize = 12.sp)
+                        Switch(checked = adBlockEnabled, onCheckedChange = { adBlockEnabled = it })
                     }
                 }
 
-                // Elenco opzioni rapide personalizzabili (aggiungibili ed eliminabili)
                 if (quickPresets.isNotEmpty()) {
-                    Text(
-                        text = "Opzioni rapide (tocca per aprire, × per rimuovere):",
-                        color = Color(0xFF94A3B8),
-                        fontSize = 11.sp
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
+                    Text("Opzioni rapide:", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         quickPresets.forEach { preset ->
                             InputChip(
                                 selected = false,
                                 onClick = {
-                                    onAddWebApp(
-                                        preset.name,
-                                        preset.url,
-                                        preset.browserPackage ?: selectedBrowserPkg,
-                                        adBlockEnabled
-                                    )
+                                    onAddWebApp(preset.name, preset.url, preset.browserPackage ?: selectedBrowserPkg, adBlockEnabled)
                                 },
                                 label = { Text(preset.name, color = Color.White, fontSize = 12.sp) },
                                 trailingIcon = {
                                     Icon(
-                                        imageVector = Icons.Rounded.Close,
-                                        contentDescription = "Rimuovi rapido",
+                                        Icons.Rounded.Close,
+                                        "Rimuovi",
                                         tint = Color(0xFFF87171),
-                                        modifier = Modifier
-                                            .size(15.dp)
-                                            .clickable { onDeleteQuickPreset(preset) }
+                                        modifier = Modifier.size(15.dp).clickable { onDeleteQuickPreset(preset) }
                                     )
                                 }
                             )
@@ -3084,20 +2272,12 @@ private fun WebAppLauncherDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (url.isNotBlank() && url != "https://") {
-                        onAddWebApp(title, url.trim(), selectedBrowserPkg, adBlockEnabled)
-                    }
-                }
-            ) {
-                Text("Apri sulla Tela")
-            }
+            Button(onClick = {
+                if (url.isNotBlank() && url != "https://") onAddWebApp(title, url.trim(), selectedBrowserPkg, adBlockEnabled)
+            }) { Text("Apri sulla Tela") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Annulla", color = Color(0xFF94A3B8))
-            }
+            TextButton(onClick = onDismiss) { Text("Annulla", color = Color(0xFF94A3B8)) }
         }
     )
 }
@@ -3113,10 +2293,7 @@ private fun BoxScope.ResizeCornerHandle(
             .align(alignment)
             .size(28.dp)
             .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragEnd = onDragEnd,
-                    onDragCancel = onDragEnd
-                ) { change, dragAmount ->
+                detectDragGestures(onDragEnd = onDragEnd, onDragCancel = onDragEnd) { change, dragAmount ->
                     change.consume()
                     onDragDelta(dragAmount.x, dragAmount.y)
                 }
@@ -3145,93 +2322,33 @@ private fun AudioRecorderDialog(
     var outputFilePath by remember { mutableStateOf<String?>(null) }
     var memoLabel by remember { mutableStateOf("Memo Vocale") }
 
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            try {
-                val dir = File(context.filesDir, "audio_memos")
-                if (!dir.exists()) dir.mkdirs()
-                val file = File(dir, "memo_${UUID.randomUUID()}.m4a")
-                val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    MediaRecorder(context)
-                } else {
-                    @Suppress("DEPRECATION")
-                    MediaRecorder()
-                }
-                rec.apply {
-                    setAudioSource(MediaRecorder.AudioSource.MIC)
-                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                    setOutputFile(file.absolutePath)
-                    prepare()
-                    start()
-                }
-                recorder = rec
-                outputFilePath = file.absolutePath
-                isRecording = true
-            } catch (_: Exception) {
-                Toast.makeText(context, "Errore avvio microfono", Toast.LENGTH_SHORT).show()
+    fun beginMic() {
+        runCatching {
+            val dir = File(context.filesDir, "audio_memos").apply { if (!exists()) mkdirs() }
+            val file = File(dir, "memo_${UUID.randomUUID()}.m4a")
+            val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else @Suppress("DEPRECATION") MediaRecorder()
+            rec.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setOutputFile(file.absolutePath)
+                prepare()
+                start()
             }
-        } else {
-            Toast.makeText(context, "Permesso microfono negato", Toast.LENGTH_SHORT).show()
+            recorder = rec
+            outputFilePath = file.absolutePath
+            isRecording = true
+        }.onFailure {
+            Toast.makeText(context, "Errore avvio microfono", Toast.LENGTH_SHORT).show()
         }
     }
 
-    fun startRecording() {
-        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
-        if (granted) {
-            try {
-                val dir = File(context.filesDir, "audio_memos")
-                if (!dir.exists()) dir.mkdirs()
-                val file = File(dir, "memo_${UUID.randomUUID()}.m4a")
-                val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    MediaRecorder(context)
-                } else {
-                    @Suppress("DEPRECATION")
-                    MediaRecorder()
-                }
-                rec.apply {
-                    setAudioSource(MediaRecorder.AudioSource.MIC)
-                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                    setOutputFile(file.absolutePath)
-                    prepare()
-                    start()
-                }
-                recorder = rec
-                outputFilePath = file.absolutePath
-                isRecording = true
-            } catch (_: Exception) {
-                Toast.makeText(context, "Errore avvio microfono", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-
-    fun stopAndSaveRecording() {
-        try {
-            recorder?.stop()
-            recorder?.release()
-        } catch (_: Exception) {
-        }
-        recorder = null
-        isRecording = false
-        val path = outputFilePath
-        if (path != null) {
-            onAudioSaved(path, memoLabel.ifBlank { "Memo Vocale" })
-        }
+    val micPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginMic() else Toast.makeText(context, "Permesso microfono negato", Toast.LENGTH_SHORT).show()
     }
 
     DisposableEffect(Unit) {
-        onDispose {
-            try {
-                recorder?.release()
-            } catch (_: Exception) {
-            }
-        }
+        onDispose { runCatching { recorder?.release() } }
     }
 
     AlertDialog(
@@ -3246,15 +2363,16 @@ private fun AudioRecorderDialog(
                     onValueChange = { memoLabel = it },
                     label = { Text("Nome memo") },
                     singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White
-                    )
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                 )
-
                 if (isRecording) {
                     Button(
-                        onClick = { stopAndSaveRecording() },
+                        onClick = {
+                            runCatching { recorder?.stop(); recorder?.release() }
+                            recorder = null
+                            isRecording = false
+                            outputFilePath?.let { onAudioSaved(it, memoLabel.ifBlank { "Memo Vocale" }) }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -3264,7 +2382,10 @@ private fun AudioRecorderDialog(
                     }
                 } else {
                     Button(
-                        onClick = { startRecording() },
+                        onClick = {
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) beginMic()
+                            else micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF43F5E)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -3272,33 +2393,20 @@ private fun AudioRecorderDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Registra Memo Vocale")
                     }
-
-                    OutlinedButton(
-                        onClick = onPickFromStorage,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    OutlinedButton(onClick = onPickFromStorage, modifier = Modifier.fillMaxWidth()) {
                         Text("Scegli file audio dall'archivio")
                     }
                 }
             }
         },
         confirmButton = {
-            if (!isRecording) {
-                TextButton(onClick = onDismiss) {
-                    Text("Chiudi", color = Color(0xFF94A3B8))
-                }
-            }
+            if (!isRecording) TextButton(onClick = onDismiss) { Text("Chiudi", color = Color(0xFF94A3B8)) }
         }
     )
 }
 
 @Composable
-private fun ToolButton(
-    icon: ImageVector,
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
+private fun ToolButton(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
     val bg = if (selected) Color(0xFF2563EB) else Color.Transparent
     val fg = if (selected) Color.White else Color(0xFF94A3B8)
     Row(
@@ -3309,19 +2417,14 @@ private fun ToolButton(
             .clickable { onClick() }
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Icon(imageVector = icon, contentDescription = label, tint = fg, modifier = Modifier.size(18.dp))
+        Icon(icon, label, tint = fg, modifier = Modifier.size(18.dp))
         Spacer(modifier = Modifier.width(6.dp))
-        Text(text = label, color = fg, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(label, color = fg, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
 
 @Composable
-private fun ActionPillButton(
-    icon: ImageVector,
-    label: String,
-    containerColor: Color,
-    onClick: () -> Unit
-) {
+private fun ActionPillButton(icon: ImageVector, label: String, containerColor: Color, onClick: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -3330,109 +2433,54 @@ private fun ActionPillButton(
             .clickable { onClick() }
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Icon(imageVector = icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(18.dp))
+        Icon(icon, label, tint = Color.White, modifier = Modifier.size(18.dp))
         Spacer(modifier = Modifier.width(5.dp))
-        Text(text = label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
 private fun openSystemOrCustomShortcut(context: Context, item: CanvasItem) {
-    try {
+    runCatching {
         if (!item.shortcutIntentUri.isNullOrEmpty()) {
-            val parsed = Intent.parseUri(item.shortcutIntentUri, Intent.URI_INTENT_SCHEME)
-            parsed.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(parsed)
+            context.startActivity(Intent.parseUri(item.shortcutIntentUri, Intent.URI_INTENT_SCHEME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return
         }
         if (!item.shortcutAction.isNullOrEmpty()) {
-            context.startActivity(
-                Intent(item.shortcutAction).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+            context.startActivity(Intent(item.shortcutAction).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return
         }
-    } catch (_: Exception) {
     }
     Toast.makeText(context, "Scorciatoia non avviabile", Toast.LENGTH_SHORT).show()
 }
 
 private fun openLinkedFile(context: Context, item: CanvasItem) {
     val uriStr = item.fileUri ?: return
-    try {
-        val uri = Uri.parse(uriStr)
+    runCatching {
         val openIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, item.fileMimeType ?: "*/*")
+            setDataAndType(Uri.parse(uriStr), item.fileMimeType ?: "*/*")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(Intent.createChooser(openIntent, "Apri file con"))
-    } catch (_: Exception) {
+    }.onFailure {
         Toast.makeText(context, "Nessuna app trovata per questo file", Toast.LENGTH_SHORT).show()
     }
 }
 
 private fun launchApp(context: Context, app: AppInfo) {
-    try {
+    runCatching {
         if (app.componentName != null && app.userHandle != null) {
             val launcherApps = context.getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
             launcherApps.startMainActivity(app.componentName, app.userHandle, null, null)
             return
         }
-    } catch (_: Exception) {
     }
     launchPackage(context, app.packageName)
 }
 
 private fun launchPackage(context: Context, packageName: String) {
     val intent = context.packageManager.getLaunchIntentForPackage(packageName)
-    if (intent != null) {
-        context.startActivity(intent)
-    } else {
-        Toast.makeText(context, "App non avviabile direttamente", Toast.LENGTH_SHORT).show()
-    }
-}
-
-/**
- * Controlla se un tocco cade dentro l'area contenuto (sotto la barra titolo da 36dp)
- * di una finestra Web App o App, in modo da lasciar passare lo scorrimento dentro l'app.
- */
-private fun isScreenPosInsideInteractiveWindowBody(
-    screenPos: Offset,
-    items: List<CanvasItem>,
-    cameraOffset: Offset,
-    zoomScale: Float,
-    densityPx: Float
-): Boolean {
-    for (i in items.indices.reversed()) {
-        val obj = items[i]
-        if (obj.type != ItemType.WEB_APP && obj.type != ItemType.APP_WINDOW) continue
-        val left = obj.x * zoomScale + cameraOffset.x
-        val titleBarBottom = (obj.y + 36f * densityPx) * zoomScale + cameraOffset.y
-        val right = left + (obj.widthDp * densityPx * zoomScale)
-        val bottom = obj.y * zoomScale + cameraOffset.y + (obj.heightDp * densityPx * zoomScale)
-        if (screenPos.x in left..right && screenPos.y in titleBarBottom..bottom) {
-            return true
-        }
-    }
-    return false
-}
-
-private fun findItemAtScreenPos(
-    screenPos: Offset,
-    items: List<CanvasItem>,
-    cameraOffset: Offset,
-    zoomScale: Float,
-    densityPx: Float
-): CanvasItem? {
-    for (i in items.indices.reversed()) {
-        val obj = items[i]
-        val left = obj.x * zoomScale + cameraOffset.x
-        val top = obj.y * zoomScale + cameraOffset.y
-        val right = left + (obj.widthDp * densityPx * zoomScale)
-        val bottom = top + (obj.heightDp * densityPx * zoomScale)
-        if (screenPos.x in left..right && screenPos.y in top..bottom) {
-            return obj
-        }
-    }
-    return null
+    if (intent != null) context.startActivity(intent)
+    else Toast.makeText(context, "App non avviabile direttamente", Toast.LENGTH_SHORT).show()
 }
 
 private fun isPointInPolygon(point: Offset, polygon: List<Offset>): Boolean {
@@ -3445,9 +2493,9 @@ private fun isPointInPolygon(point: Offset, polygon: List<Offset>): Boolean {
         val xj = polygon[j].x
         val yj = polygon[j].y
         val denom = (yj - yi).let { if (it == 0f) 0.0001f else it }
-        val intersect = ((yi > point.y) != (yj > point.y)) &&
-                (point.x < (xj - xi) * (point.y - yi) / denom + xi)
-        if (intersect) inside = !inside
+        if (((yi > point.y) != (yj > point.y)) && (point.x < (xj - xi) * (point.y - yi) / denom + xi)) {
+            inside = !inside
+        }
         j = i
     }
     return inside
