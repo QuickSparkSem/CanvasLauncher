@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -64,6 +65,7 @@ fun AppDrawerOverlay(
     appList: List<AppInfo>,
     drawerAlpha: Float,
     onLaunchApp: (AppInfo) -> Unit,
+    onOpenAppInCanvasWindow: (AppInfo) -> Unit,
     onAddAppsToCanvas: (List<AppInfo>) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -75,12 +77,10 @@ fun AppDrawerOverlay(
     var selectedColor by remember { mutableStateOf(AppColorCategory.ALL) }
     var activeLetter by remember { mutableStateOf<String?>(null) }
 
-    // Selezione multipla e opzioni singola app
     var multiSelectMode by remember { mutableStateOf(false) }
     val selectedPackages = remember { mutableStateListOf<String>() }
     var actionTargetApp by remember { mutableStateOf<AppInfo?>(null) }
 
-    // Onda luminosa di colore
     val waveProgress = remember { Animatable(0f) }
     var waveColor by remember { mutableStateOf(Color.Transparent) }
     var waveCenter by remember { mutableStateOf(Offset(500f, 1800f)) }
@@ -102,7 +102,6 @@ fun AppDrawerOverlay(
         }.toSet()
     }
 
-    // Scorrimento immediato durante il trascinamento sull'indice A-Z
     fun scrollToLetterImmediate(letter: String) {
         if (activeLetter == letter) return
         activeLetter = letter
@@ -128,7 +127,6 @@ fun AppDrawerOverlay(
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // --- ONDA LUMINOSA ---
         if (waveProgress.value > 0f && waveProgress.value < 1f) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val maxRadius = size.height * 1.35f
@@ -163,7 +161,6 @@ fun AppDrawerOverlay(
                 .fillMaxSize()
                 .padding(top = 12.dp)
         ) {
-            // --- BARRA RICERCA O SELEZIONE MULTIPLA ---
             if (multiSelectMode) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -259,7 +256,6 @@ fun AppDrawerOverlay(
                 }
             }
 
-            // Indicatore lettera attiva
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -269,7 +265,7 @@ fun AppDrawerOverlay(
             ) {
                 Text(
                     text = if (multiSelectMode) "Tocca le app da aggiungere insieme"
-                    else "Tocca per aprire  •  Tieni premuto per opzioni",
+                    else "Tocca per aprire  •  Tieni premuto per finestra o icona",
                     color = Color(0xFF94A3B8),
                     fontSize = 11.sp
                 )
@@ -283,7 +279,6 @@ fun AppDrawerOverlay(
                 }
             }
 
-            // --- GRIGLIA APP PULITA (SENZA CONTORNI) + INDICE A-Z ---
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -325,11 +320,8 @@ fun AppDrawerOverlay(
                                     .combinedClickable(
                                         onClick = {
                                             if (multiSelectMode) {
-                                                if (isChecked) {
-                                                    selectedPackages.remove(app.packageName)
-                                                } else {
-                                                    selectedPackages.add(app.packageName)
-                                                }
+                                                if (isChecked) selectedPackages.remove(app.packageName)
+                                                else selectedPackages.add(app.packageName)
                                             } else {
                                                 onLaunchApp(app)
                                             }
@@ -396,7 +388,7 @@ fun AppDrawerOverlay(
                     }
                 }
 
-                // --- INDICE LATERALE SCORREVOLE A-Z ---
+                // Indice laterale scorrevole A-Z
                 var indexHeightPx by remember { mutableFloatStateOf(1f) }
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -449,7 +441,7 @@ fun AppDrawerOverlay(
                 }
             }
 
-            // --- BARRA INFERIORE SOLO PALLINI COLORE (SENZA SCRITTE) ---
+            // Barra inferiore solo pallini colore
             Surface(
                 color = Color(0xCC141822),
                 modifier = Modifier
@@ -529,7 +521,7 @@ fun AppDrawerOverlay(
             }
         }
 
-        // --- FINESTRA OPZIONI APP (TENENDO PREMUTO SU UN'APP) ---
+        // Finestra opzioni app
         if (actionTargetApp != null) {
             val targetApp = actionTargetApp!!
             AlertDialog(
@@ -542,6 +534,19 @@ fun AppDrawerOverlay(
                         Button(
                             onClick = {
                                 actionTargetApp = null
+                                onOpenAppInCanvasWindow(targetApp)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Rounded.PictureInPictureAlt, null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Apri in Finestra sulla Tela")
+                        }
+
+                        Button(
+                            onClick = {
+                                actionTargetApp = null
                                 onAddAppsToCanvas(listOf(targetApp))
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
@@ -549,7 +554,7 @@ fun AppDrawerOverlay(
                         ) {
                             Icon(Icons.Rounded.AddToHomeScreen, null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Aggiungi alla Tela Home")
+                            Text("Aggiungi Icona alla Tela")
                         }
 
                         OutlinedButton(
