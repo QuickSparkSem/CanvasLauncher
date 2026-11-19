@@ -78,18 +78,16 @@ fun LauncherSettingsDialog(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF161922),
         titleContentColor = Color.White,
-        title = {
-            Text("Impostazioni Canvas Launcher", fontWeight = FontWeight.Bold)
-        },
+        title = { Text("Impostazioni Canvas Launcher", fontWeight = FontWeight.Bold) },
         text = {
             Column(
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 470.dp)
+                    .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // 0. STATO SHIZUKU & FINESTRE VIRTUALDISPLAY
+                // Stato Shizuku
                 Column(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
@@ -116,9 +114,9 @@ fun LauncherSettingsDialog(
                     }
                     Text(
                         text = if (shizukuReady) {
-                            "Collegato: le app aperte dal drawer vengono renderizzate direttamente dentro finestre ridimensionabili sulla tela."
+                            "Collegato: puoi aprire qualsiasi app direttamente in finestra sulla tela."
                         } else {
-                            "Premi qui sotto per autorizzare Canvas Launcher in Shizuku. Se dopo un riavvio Shizuku è spento, le app useranno automaticamente le finestre Freeform."
+                            "Premi qui sotto per richiedere l'autorizzazione a Shizuku. Se Shizuku è spento, le app useranno il ripiego Freeform."
                         },
                         color = Color(0xFFCBD5E1),
                         fontSize = 11.sp
@@ -134,7 +132,7 @@ fun LauncherSettingsDialog(
                     }
                 }
 
-                // 1. POTENZA VIBRAZIONE INDICE ALFABETICO
+                // Potenza vibrazione indice alfabetico
                 Column {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -142,19 +140,9 @@ fun LauncherSettingsDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Rounded.Vibration,
-                                contentDescription = null,
-                                tint = Color(0xFF38BDF8),
-                                modifier = Modifier.size(18.dp)
-                            )
+                            Icon(Icons.Rounded.Vibration, null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Vibrazione indice alfabetico",
-                                color = Color.White,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp
-                            )
+                            Text("Vibrazione indice alfabetico", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                         }
                         Text(
                             text = if (hapticStrength <= 0.01f) "Spenta" else "${(hapticStrength * 100).roundToInt()}%",
@@ -173,43 +161,29 @@ fun LauncherSettingsDialog(
                     )
                 }
 
-                // 2. TRASPARENZA SFONDO TELA
+                // Opacità sfondo tela
                 Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Opacità sfondo tela", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                         Text("${(backgroundAlpha * 100).roundToInt()}%", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
-                    Slider(
-                        value = backgroundAlpha,
-                        onValueChange = onBackgroundAlphaChange,
-                        valueRange = 0f..1f
-                    )
+                    Slider(value = backgroundAlpha, onValueChange = onBackgroundAlphaChange, valueRange = 0f..1f)
                 }
 
-                // 3. TRASPARENZA APP DRAWER
+                // Opacità drawer
                 Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Opacità menu App (Drawer)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                         Text("${(drawerAlpha * 100).roundToInt()}%", color = Color(0xFF60A5FA), fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
-                    Slider(
-                        value = drawerAlpha,
-                        onValueChange = onDrawerAlphaChange,
-                        valueRange = 0.2f..1f
-                    )
+                    Slider(value = drawerAlpha, onValueChange = onDrawerAlphaChange, valueRange = 0.2f..1f)
                 }
 
                 HorizontalDivider(color = Color(0xFF283042))
 
-                // 4. BARRA DI STATO (STATUS BAR)
+                // Barra di stato
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Barra di stato in alto (Status Bar)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("Barra di stato in alto", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StatusBarMode.entries.forEach { mode ->
                             FilterChip(
@@ -221,7 +195,7 @@ fun LauncherSettingsDialog(
                     }
                 }
 
-                // 5. MOSTRA LAUNCHER NEL DRAWER
+                // Mostra launcher nel drawer
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -229,17 +203,14 @@ fun LauncherSettingsDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                         Text("Mostra Canvas Launcher tra le app", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                        Text("Rende visibile l'icona del launcher nel drawer", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                        Text("Mostra l'icona del launcher nel drawer", color = Color(0xFF94A3B8), fontSize = 11.sp)
                     }
-                    Switch(
-                        checked = showSelfInDrawer,
-                        onCheckedChange = onShowSelfInDrawerChange
-                    )
+                    Switch(checked = showSelfInDrawer, onCheckedChange = onShowSelfInDrawerChange)
                 }
 
                 HorizontalDivider(color = Color(0xFF283042))
 
-                // 6. SCORCIATOIE DI SISTEMA RAPIDE
+                // Scorciatoie rapide
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Scorciatoie di sistema rapide", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     FlowRow(
@@ -251,12 +222,7 @@ fun LauncherSettingsDialog(
                                 onClick = { onAddSystemShortcut(preset) },
                                 label = { Text("+ ${preset.title}", color = Color.White, fontSize = 12.sp) },
                                 leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Rounded.SettingsApplications,
-                                        contentDescription = null,
-                                        tint = Color(0xFFFB923C),
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                                    Icon(Icons.Rounded.SettingsApplications, null, tint = Color(0xFFFB923C), modifier = Modifier.size(16.dp))
                                 }
                             )
                         }
@@ -265,13 +231,9 @@ fun LauncherSettingsDialog(
 
                 HorizontalDivider(color = Color(0xFF283042))
 
-                // 7. AZIONI RAPIDE
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
-                        onClick = {
-                            onDismiss()
-                            onChangeWallpaper()
-                        },
+                        onClick = { onDismiss(); onChangeWallpaper() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Rounded.Wallpaper, null, modifier = Modifier.size(18.dp))
@@ -280,10 +242,7 @@ fun LauncherSettingsDialog(
                     }
 
                     OutlinedButton(
-                        onClick = {
-                            onDismiss()
-                            onAddSystemWidget()
-                        },
+                        onClick = { onDismiss(); onAddSystemWidget() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Rounded.Widgets, null, modifier = Modifier.size(18.dp))
@@ -292,10 +251,7 @@ fun LauncherSettingsDialog(
                     }
 
                     TextButton(
-                        onClick = {
-                            onRestoreGuideNote()
-                            onDismiss()
-                        },
+                        onClick = { onRestoreGuideNote(); onDismiss() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Rounded.Refresh, null, modifier = Modifier.size(16.dp))
@@ -306,9 +262,7 @@ fun LauncherSettingsDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onDismiss) {
-                Text("Fatto")
-            }
+            Button(onClick = onDismiss) { Text("Fatto") }
         }
     )
 }
