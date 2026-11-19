@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SettingsApplications
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material.icons.rounded.Wallpaper
 import androidx.compose.material.icons.rounded.Widgets
 import androidx.compose.material3.*
@@ -18,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,6 +60,8 @@ fun LauncherSettingsDialog(
     onBackgroundAlphaChange: (Float) -> Unit,
     drawerAlpha: Float,
     onDrawerAlphaChange: (Float) -> Unit,
+    hapticStrength: Float,
+    onHapticStrengthChange: (Float) -> Unit,
     statusBarMode: StatusBarMode,
     onStatusBarModeChange: (StatusBarMode) -> Unit,
     showSelfInDrawer: Boolean,
@@ -68,6 +72,8 @@ fun LauncherSettingsDialog(
     onRestoreGuideNote: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF161922),
@@ -102,7 +108,7 @@ fun LauncherSettingsDialog(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (shizukuReady) "Shizuku Attivo (Finestre su Tela)"
-                            else "Shizuku Spento (Ripiego Freeform)",
+                            else "Shizuku Non Autorizzato / Spento",
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
@@ -110,9 +116,9 @@ fun LauncherSettingsDialog(
                     }
                     Text(
                         text = if (shizukuReady) {
-                            "Le app aperte dal drawer vengono renderizzate direttamente dentro finestre ridimensionabili sulla tela."
+                            "Collegato: le app aperte dal drawer vengono renderizzate direttamente dentro finestre ridimensionabili sulla tela."
                         } else {
-                            "Se dopo un riavvio Shizuku è spento, le app si apriranno in finestra Freeform nativa e torneranno sulla tela appena riattivi Shizuku."
+                            "Premi qui sotto per autorizzare Canvas Launcher in Shizuku. Se dopo un riavvio Shizuku è spento, le app useranno automaticamente le finestre Freeform."
                         },
                         color = Color(0xFFCBD5E1),
                         fontSize = 11.sp
@@ -128,7 +134,46 @@ fun LauncherSettingsDialog(
                     }
                 }
 
-                // 1. TRASPARENZA SFONDO TELA
+                // 1. POTENZA VIBRAZIONE INDICE ALFABETICO
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Rounded.Vibration,
+                                contentDescription = null,
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Vibrazione indice alfabetico",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp
+                            )
+                        }
+                        Text(
+                            text = if (hapticStrength <= 0.01f) "Spenta" else "${(hapticStrength * 100).roundToInt()}%",
+                            color = Color(0xFF60A5FA),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                    Slider(
+                        value = hapticStrength,
+                        onValueChange = { newVal ->
+                            onHapticStrengthChange(newVal)
+                            triggerDrawerHapticTick(context, newVal)
+                        },
+                        valueRange = 0f..1f
+                    )
+                }
+
+                // 2. TRASPARENZA SFONDO TELA
                 Column {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -144,7 +189,7 @@ fun LauncherSettingsDialog(
                     )
                 }
 
-                // 2. TRASPARENZA APP DRAWER
+                // 3. TRASPARENZA APP DRAWER
                 Column {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -162,7 +207,7 @@ fun LauncherSettingsDialog(
 
                 HorizontalDivider(color = Color(0xFF283042))
 
-                // 3. BARRA DI STATO (STATUS BAR)
+                // 4. BARRA DI STATO (STATUS BAR)
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Barra di stato in alto (Status Bar)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -176,7 +221,7 @@ fun LauncherSettingsDialog(
                     }
                 }
 
-                // 4. MOSTRA LAUNCHER NEL DRAWER
+                // 5. MOSTRA LAUNCHER NEL DRAWER
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -194,7 +239,7 @@ fun LauncherSettingsDialog(
 
                 HorizontalDivider(color = Color(0xFF283042))
 
-                // 5. SCORCIATOIE DI SISTEMA RAPIDE
+                // 6. SCORCIATOIE DI SISTEMA RAPIDE
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Scorciatoie di sistema rapide", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     FlowRow(
@@ -220,7 +265,7 @@ fun LauncherSettingsDialog(
 
                 HorizontalDivider(color = Color(0xFF283042))
 
-                // 6. AZIONI RAPIDE
+                // 7. AZIONI RAPIDE
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
