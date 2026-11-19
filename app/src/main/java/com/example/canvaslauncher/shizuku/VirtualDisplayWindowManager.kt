@@ -21,10 +21,10 @@ import android.view.TextureView
 import android.webkit.WebView
 import android.widget.Toast
 import com.example.canvaslauncher.model.CanvasItem
-import org.lsposed.hiddenapibypass.HiddenApiBypass
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
+import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 
 object VirtualDisplayWindowManager {
@@ -49,9 +49,26 @@ object VirtualDisplayWindowManager {
     private var cachedActivityTaskManager: Any? = null
     private var cachedWindowManager: Any? = null
 
+    @SuppressLint("DiscouragedPrivateApi", "PrivateApi")
     fun ensureHiddenApiBypass() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            runCatching { HiddenApiBypass.addHiddenApiExemptions("") }
+            runCatching {
+                val forName = Class::class.java.getDeclaredMethod("forName", String::class.java)
+                val getDeclaredMethod = Class::class.java.getDeclaredMethod(
+                    "getDeclaredMethod",
+                    String::class.java,
+                    arrayOf<Class<*>>()::class.java
+                )
+                val vmRuntimeClass = forName.invoke(null, "dalvik.system.VMRuntime") as Class<*>
+                val getRuntime = getDeclaredMethod.invoke(vmRuntimeClass, "getRuntime", null) as Method
+                val setHiddenApiExemptions = getDeclaredMethod.invoke(
+                    vmRuntimeClass,
+                    "setHiddenApiExemptions",
+                    arrayOf<Class<*>>(Array<String>::class.java)
+                ) as Method
+                val runtime = getRuntime.invoke(null)
+                setHiddenApiExemptions.invoke(runtime, arrayOf("L"))
+            }
         }
     }
 
@@ -189,6 +206,22 @@ object VirtualDisplayWindowManager {
         for (m in methods) {
             val params = m.parameterTypes
             if (params.size == 11) {
+                m.invoke(
+                    atm,
+                    null,
+                    "com.android.shell",
+                    null,
+                    intent,
+                    intent.type,
+                    null,
+                    null,
+                    0,
+                    Intent.FLAG_ACTIVITY_NEW_TASK,
+                    null,
+                    options
+                )
+                return true
+            } else if (params.size == 12) {
                 m.invoke(
                     atm,
                     null,
