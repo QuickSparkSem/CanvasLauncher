@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -30,7 +31,9 @@ import com.example.canvaslauncher.data.StatusBarMode
 import com.example.canvaslauncher.data.StorageManager
 import com.example.canvaslauncher.model.CanvasItem
 import com.example.canvaslauncher.model.ItemType
+import com.example.canvaslauncher.shizuku.VirtualDisplayWindowManager
 import com.example.canvaslauncher.ui.CanvasLauncherApp
+import rikka.shizuku.Shizuku
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -51,6 +54,23 @@ class MainActivity : ComponentActivity() {
     private var incomingText by mutableStateOf<String?>(null)
     private var incomingImageUri by mutableStateOf<Uri?>(null)
     private var incomingAudioUri by mutableStateOf<Uri?>(null)
+    private var shizukuReadyState by mutableStateOf(false)
+
+    private val shizukuPermissionListener =
+        Shizuku.OnRequestPermissionResultListener { _, grantResult ->
+            shizukuReadyState = grantResult == PackageManager.PERMISSION_GRANTED
+            if (shizukuReadyState) {
+                Toast.makeText(this, "Shizuku collegato: finestre su tela attive!", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+    private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
+        shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
+    }
+
+    private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
+        shizukuReadyState = false
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,6 +80,14 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
         applyStatusBarMode(StorageManager.getStatusBarMode(this))
+
+        try {
+            Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
+            Shizuku.addBinderReceivedListenerSticky(shizukuBinderReceivedListener)
+            Shizuku.addBinderDeadListener(shizukuBinderDeadListener)
+        } catch (_: Throwable) {
+        }
+        shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
 
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, APPWIDGET_HOST_ID)
@@ -75,6 +103,11 @@ class MainActivity : ComponentActivity() {
                 appList = appList,
                 appWidgetHost = appWidgetHost,
                 appWidgetManager = appWidgetManager,
+                shizukuReady = shizukuReadyState,
+                onRequestShizukuPermission = {
+                    VirtualDisplayWindowManager.requestShizukuPermission(this)
+                    shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
+                },
                 onRequestPickSystemWidget = { startPickSystemWidget() },
                 onRequestPickSystemShortcut = { startPickSystemShortcut() },
                 onStatusBarModeChanged = { mode -> applyStatusBarMode(mode) },
@@ -88,6 +121,28 @@ class MainActivity : ComponentActivity() {
                     incomingAudioUri = null
                 }
             )
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Cattura screenshot di tutte le finestre aperte prima di blocco schermo o cambio app
+        VirtualDisplayWindowManager.captureAllSnapshots(this, canvasItems)
+        StorageManager.saveItems(this, canvasItems)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
+            Shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener)
+            Shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
+        } catch (_: Throwable) {
         }
     }
 
@@ -130,10 +185,7 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     private fun startPickSystemShortcut() {
         val shortcutPickIntent = Intent(Intent.ACTION_PICK_ACTIVITY).apply {
-            putExtra(
-                Intent.EXTRA_INTENT,
-                Intent(Intent.ACTION_CREATE_SHORTCUT)
-            )
+            putExtra(Intent.EXTRA_INTENT, Intent(Intent.ACTION_CREATE_SHORTCUT))
             putExtra(Intent.EXTRA_TITLE, "Scegli scorciatoia (es. Shortcut Maker)")
         }
         startActivityForResult(shortcutPickIntent, REQUEST_PICK_SHORTCUT_APP)
@@ -168,7 +220,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 REQUEST_PICK_SHORTCUT_APP -> {
-                    // Avvia l'activity scelta (es. Shortcut Maker o Impostazioni) per configurare la scorciatoia
                     startActivityForResult(data, REQUEST_CREATE_SHORTCUT)
                 }
                 REQUEST_CREATE_SHORTCUT -> {
@@ -180,18 +231,16 @@ class MainActivity : ComponentActivity() {
                     )
                     if (shortcutIntent != null) {
                         val intentUri = shortcutIntent.toUri(Intent.URI_INTENT_SCHEME)
-                        val defaultColor = StorageManager.getDefaultElementColor(this)
                         canvasItems.add(
                             CanvasItem(
                                 id = UUID.randomUUID().toString(),
                                 title = shortcutName,
-                                content = "Scorciatoia personalizzata",
                                 shortcutIntentUri = intentUri,
                                 x = 140f,
                                 y = 260f,
-                                widthDp = 180f,
-                                heightDp = 110f,
-                                colorHex = defaultColor,
+                                widthDp = 110f,
+                                heightDp = 105f,
+                                colorHex = 0x00000000L,
                                 type = ItemType.SYSTEM_SHORTCUT
                             )
                         )
@@ -209,8 +258,7 @@ class MainActivity : ComponentActivity() {
 
     private fun addWidgetCardToCanvas(appWidgetId: Int) {
         val info = appWidgetManager.getAppWidgetInfo(appWidgetId)
-        val label = info?.loadLabel(packageManager) ?: "Widget Sistema"
-        val defaultColor = StorageManager.getDefaultElementColor(this)
+        val label = info?.loadLabel(packageManager) ?: "Widget"
         canvasItems.add(
             CanvasItem(
                 id = UUID.randomUUID().toString(),
@@ -218,9 +266,9 @@ class MainActivity : ComponentActivity() {
                 appWidgetId = appWidgetId,
                 x = 120f,
                 y = 240f,
-                widthDp = 260f,
-                heightDp = 190f,
-                colorHex = defaultColor,
+                widthDp = 250f,
+                heightDp = 180f,
+                colorHex = 0x00000000L,
                 type = ItemType.SYSTEM_WIDGET
             )
         )
