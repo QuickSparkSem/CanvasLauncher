@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.net.Uri
 import android.os.IBinder
 import android.os.SystemClock
 import android.view.InputDevice
@@ -42,13 +43,20 @@ object VirtualDisplayWindowManager {
     private const val SHIZUKU_PERMISSION_REQ_CODE = 7001
     private const val WINDOWING_MODE_FREEFORM = 5
 
-    // DISPLAY_IME_POLICY_LOCAL = 0 (tastiera dentro la mini-finestra)
-    // DISPLAY_IME_POLICY_FALLBACK_DISPLAY = 1 (tastiera sullo schermo principale)
     const val IME_POLICY_LOCAL = 0
     const val IME_POLICY_FALLBACK_DISPLAY = 1
 
     private val activeSessions = ConcurrentHashMap<String, ManagedWindowSession>()
     val activeWebViews = ConcurrentHashMap<String, WebView>()
+
+    fun isShizukuInstalled(context: Context): Boolean {
+        return try {
+            context.packageManager.getPackageInfo("moe.shizuku.privileged.api", 0)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
 
     fun isShizukuBinderAlive(): Boolean {
         return try {
@@ -69,21 +77,40 @@ object VirtualDisplayWindowManager {
 
     fun requestShizukuPermission(context: Context) {
         try {
-            if (!Shizuku.pingBinder()) {
+            if (!isShizukuInstalled(context)) {
                 Toast.makeText(
                     context,
-                    "Avvia prima l'app Shizuku (ADB wireless) sul telefono",
+                    "App Shizuku non installata sul dispositivo",
                     Toast.LENGTH_LONG
                 ).show()
+                return
+            }
+            if (!Shizuku.pingBinder()) {
+                val launchShizuku = context.packageManager
+                    .getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                if (launchShizuku != null) {
+                    Toast.makeText(
+                        context,
+                        "Apro Shizuku: verifica che il servizio sia avviato, poi torna qui",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    context.startActivity(launchShizuku)
+                } else {
+                    Toast.makeText(
+                        context,
+                        "Avvia il servizio Shizuku (Debug Wireless) sul telefono",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
                 return
             }
             if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
                 Shizuku.requestPermission(SHIZUKU_PERMISSION_REQ_CODE)
             } else {
-                Toast.makeText(context, "Shizuku già autorizzato!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Shizuku collegato e autorizzato!", Toast.LENGTH_SHORT).show()
             }
         } catch (_: Throwable) {
-            Toast.makeText(context, "Servizio Shizuku non rilevato", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Errore comunicazione con Shizuku", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -92,28 +119,33 @@ object VirtualDisplayWindowManager {
     fun getSession(itemId: String): ManagedWindowSession? = activeSessions[itemId]
 
     /**
-     * Avvia un'app dentro un VirtualDisplay su tela se Shizuku è attivo,
-     * oppure ripiega automaticamente sulla modalità Freeform nativa di Android.
+     * Avvia un'app (o un browser esterno con URL) dentro un VirtualDisplay su tela se Shizuku è attivo,
+     * oppure ripiega sulla modalità Freeform / apertura diretta nel browser scelto.
      */
     fun launchAppInWindowOrFallback(
         context: Context,
         item: CanvasItem,
         widthPx: Int,
         heightPx: Int,
+        initialUrl: String? = null,
         onVirtualDisplayCreated: () -> Unit,
         onFallbackFreeformLaunched: () -> Unit
     ) {
-        val pkg = item.packageName ?: return
+        val pkg = item.browserPackage ?: item.packageName ?: return
 
         if (!isShizukuReady()) {
-            launchInNativeFreeform(context, pkg)
+            if (!initialUrl.isNullOrBlank()) {
+                launchUrlInExternalBrowser(context, pkg, initialUrl)
+            } else {
+                launchInNativeFreeform(context, pkg)
+            }
             onFallbackFreeformLaunched()
             return
         }
 
         val existing = activeSessions[item.id]
         if (existing != null) {
-            relaunchAppOnDisplay(context, pkg, existing.displayId)
+            relaunchOnDisplay(context, pkg, existing.displayId, initialUrl)
             onVirtualDisplayCreated()
             return
         }
@@ -125,7 +157,6 @@ object VirtualDisplayWindowManager {
             val safeW = widthPx.coerceAtLeast(360)
             val safeH = heightPx.coerceAtLeast(480)
 
-            // VIRTUAL_DISPLAY_FLAG_PUBLIC (1) | PRESENTATION (2) | OWN_CONTENT_ONLY (8) | TRUSTED (1024)
             val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
@@ -139,7 +170,8 @@ object VirtualDisplayWindowManager {
                 null,
                 flags
             ) ?: run {
-                launchInNativeFreeform(context, pkg)
+                if (!initialUrl.isNullOrBlank()) launchUrlInExternalBrowser(context, pkg, initialUrl)
+                else launchInNativeFreeform(context, pkg)
                 onFallbackFreeformLaunched()
                 return
             }
@@ -159,16 +191,29 @@ object VirtualDisplayWindowManager {
             )
             activeSessions[item.id] = session
 
-            relaunchAppOnDisplay(context, pkg, displayId)
+            relaunchOnDisplay(context, pkg, displayId, initialUrl)
             onVirtualDisplayCreated()
         } catch (_: Throwable) {
-            launchInNativeFreeform(context, pkg)
+            if (!initialUrl.isNullOrBlank()) launchUrlInExternalBrowser(context, pkg, initialUrl)
+            else launchInNativeFreeform(context, pkg)
             onFallbackFreeformLaunched()
         }
     }
 
-    private fun relaunchAppOnDisplay(context: Context, packageName: String, displayId: Int) {
-        val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName) ?: return
+    private fun relaunchOnDisplay(
+        context: Context,
+        packageName: String,
+        displayId: Int,
+        initialUrl: String?
+    ) {
+        val launchIntent = if (!initialUrl.isNullOrBlank()) {
+            Intent(Intent.ACTION_VIEW, Uri.parse(initialUrl)).apply {
+                setPackage(packageName)
+            }
+        } else {
+            context.packageManager.getLaunchIntentForPackage(packageName)
+        } ?: return
+
         launchIntent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
         )
@@ -177,10 +222,29 @@ object VirtualDisplayWindowManager {
         context.startActivity(launchIntent, options.toBundle())
     }
 
-    /**
-     * Modalità di ripiego automatica quando Shizuku è spento (es. dopo un riavvio fuori casa):
-     * apre l'app in finestra flottante nativa Freeform.
-     */
+    fun launchUrlInExternalBrowser(context: Context, browserPackage: String, url: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                setPackage(browserPackage)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val options = ActivityOptions.makeBasic()
+            try {
+                val setWindowingMode = ActivityOptions::class.java.getMethod(
+                    "setLaunchWindowingMode",
+                    Int::class.javaPrimitiveType
+                )
+                setWindowingMode.invoke(options, WINDOWING_MODE_FREEFORM)
+                options.setLaunchBounds(Rect(80, 180, 960, 1340))
+                context.startActivity(intent, options.toBundle())
+            } catch (_: Throwable) {
+                context.startActivity(intent)
+            }
+        } catch (_: Throwable) {
+            Toast.makeText(context, "Impossibile aprire nel browser selezionato", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     fun launchInNativeFreeform(context: Context, packageName: String) {
         val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
         if (launchIntent == null) {
@@ -207,10 +271,6 @@ object VirtualDisplayWindowManager {
         }
     }
 
-    /**
-     * Surface Detaching per Viewport Culling:
-     * quando la finestra esce dallo schermo, scollega la Surface per azzerare il carico GPU.
-     */
     fun updateSurfaceAttachment(itemId: String, surface: Surface?, isVisibleOnScreen: Boolean) {
         val session = activeSessions[itemId] ?: return
         try {
@@ -259,10 +319,6 @@ object VirtualDisplayWindowManager {
         }
     }
 
-    /**
-     * Mappa le coordinate del tocco dalla finestra zoomata/spostata sulla tela
-     * al sistema di coordinate reale del VirtualDisplay e le inietta via Shizuku.
-     */
     fun injectMappedTouch(
         itemId: String,
         action: Int,
@@ -324,7 +380,6 @@ object VirtualDisplayWindowManager {
                 InputEvent::class.java,
                 Int::class.javaPrimitiveType
             )
-            // 0 = INJECT_INPUT_EVENT_MODE_ASYNC
             injectMethod.invoke(im, event, 0)
         } catch (_: Throwable) {
         }
@@ -339,10 +394,6 @@ object VirtualDisplayWindowManager {
         }
     }
 
-    /**
-     * Salva su disco uno screenshot di tutte le finestre App e WebView aperte
-     * così dopo un riavvio l'utente vede esattamente a che punto era arrivato.
-     */
     fun captureAllSnapshots(context: Context, items: MutableList<CanvasItem>) {
         for (i in items.indices) {
             val item = items[i]
