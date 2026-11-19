@@ -1,6 +1,7 @@
 package com.example.canvaslauncher.data
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.example.canvaslauncher.model.CanvasItem
@@ -24,7 +25,7 @@ object StorageManager {
     private const val KEY_DEFAULT_COLOR = "default_element_color"
     private const val KEY_STATUS_BAR_MODE = "status_bar_mode"
     private const val KEY_SHOW_SELF_IN_DRAWER = "show_self_in_drawer"
-    private const val KEY_GUIDE_SEEDED = "has_seeded_guide_v3"
+    private const val KEY_GUIDE_SEEDED = "has_seeded_guide_v4"
 
     fun saveItems(context: Context, items: List<CanvasItem>) {
         val jsonArray = JSONArray()
@@ -38,6 +39,9 @@ object StorageManager {
                 put("audioPath", item.audioPath ?: "")
                 put("fileUri", item.fileUri ?: "")
                 put("fileMimeType", item.fileMimeType ?: "")
+                put("url", item.url ?: "")
+                put("lastSnapshotPath", item.lastSnapshotPath ?: "")
+                put("imeFallbackDisplay", item.imeFallbackDisplay)
                 put("appWidgetId", item.appWidgetId)
                 put("shortcutAction", item.shortcutAction ?: "")
                 put("shortcutIntentUri", item.shortcutIntentUri ?: "")
@@ -101,14 +105,17 @@ object StorageManager {
                         audioPath = obj.optString("audioPath").takeIf { it.isNotEmpty() },
                         fileUri = obj.optString("fileUri").takeIf { it.isNotEmpty() },
                         fileMimeType = obj.optString("fileMimeType").takeIf { it.isNotEmpty() },
+                        url = obj.optString("url").takeIf { it.isNotEmpty() },
+                        lastSnapshotPath = obj.optString("lastSnapshotPath").takeIf { it.isNotEmpty() },
+                        imeFallbackDisplay = obj.optBoolean("imeFallbackDisplay", true),
                         appWidgetId = obj.optInt("appWidgetId", -1),
                         shortcutAction = obj.optString("shortcutAction").takeIf { it.isNotEmpty() },
                         shortcutIntentUri = obj.optString("shortcutIntentUri").takeIf { it.isNotEmpty() },
                         x = obj.getDouble("x").toFloat(),
                         y = obj.getDouble("y").toFloat(),
-                        widthDp = obj.optDouble("widthDp", 185.0).toFloat(),
-                        heightDp = obj.optDouble("heightDp", 135.0).toFloat(),
-                        colorHex = obj.optLong("colorHex", 0xFF1E222D),
+                        widthDp = obj.optDouble("widthDp", 140.0).toFloat(),
+                        heightDp = obj.optDouble("heightDp", 120.0).toFloat(),
+                        colorHex = obj.optLong("colorHex", 0x00000000L),
                         type = itemType,
                         sessionPackages = pkgList
                     )
@@ -120,41 +127,28 @@ object StorageManager {
         return result
     }
 
-    fun createDefaultGuideNote(x: Float = 65f, y: Float = 135f): CanvasItem {
+    fun createDefaultGuideNote(x: Float = 55f, y: Float = 135f): CanvasItem {
         return CanvasItem(
             id = "guide_note_${UUID.randomUUID()}",
-            title = "Guida Canvas Launcher & Roadmap",
+            title = "Guida Desktop Spaziale",
             content = """
-                BENVENUTO NEL TUO DESKTOP SPAZIALE 2D
-                
-                • TELA INFINITA: Trascina con un dito per muoverti su, giù, destra e sinistra; pizzica con due dita per lo zoom. Tocca il mirino in basso per tornare al centro.
-                
-                • TIENI PREMUTO SULLO SFONDO: Aggiungi Widget di sistema, Scorciatoie (incluse quelle di Shortcut Maker), Note, Foto (da galleria o scatto al volo), Audio/Memo vocali e File dall'archivio.
-                
-                • TIENI PREMUTO UN ELEMENTO: Apri il menu dedicato all'elemento per modificarlo, ridimensionarlo trascinando gli angoli o eliminarlo. Se una nota è piccola e ha molto testo, puoi scorrere il testo direttamente dentro la scheda.
-                
-                • CURSORE & LAZO: Usa 'Cursore' per spostare le schede; usa 'Lazo' per cerchiare più elementi e unirli in una Sessione di Lavoro.
-                
-                • MENU APP: Tocca un'app per aprirla, tienila premuta per opzioni o selezione multipla. Usa l'indice A-Z laterale o i pallini colore in basso per filtrare le app con onda luminosa.
-                
-                FUNZIONI IN ARRIVO (ROADMAP):
-                1. Frecce e collegamenti visivi tra note, file e app.
-                2. Cartelle espandibili direttamente sulla tela.
-                3. Mini-mappa radar per orientarsi nelle tele grandi.
-                4. Esportazione e backup completo del workspace.
+                • STILE DESKTOP: Icone, file, widget, foto e note vivono direttamente sulla tela senza box, con il nome sotto.
+                • FINESTRE APP & WEB APP: Tieni premuto un'app nel menu e scegli 'Apri in Finestra sulla Tela' (usa VirtualDisplay + Shizuku, oppure Freeform automatico se Shizuku è spento). Puoi anche aprire Web App live sulla tela.
+                • DOPO UN RIAVVIO: Ogni finestra salva automaticamente uno screenshot del punto in cui eri arrivato.
+                • RIDIMENSIONA TUTTO: Tieni premuto su qualsiasi elemento o finestra e scegli 'Ridimensiona' per trascinare gli angoli.
             """.trimIndent(),
             x = x,
             y = y,
-            widthDp = 295f,
-            heightDp = 310f,
-            colorHex = 0xFF1E3A5F,
+            widthDp = 290f,
+            heightDp = 260f,
+            colorHex = 0x00000000L,
             type = ItemType.NOTE
         )
     }
 
     fun getBackgroundAlpha(context: Context): Float =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getFloat(KEY_BG_ALPHA, 0.85f)
+            .getFloat(KEY_BG_ALPHA, 0.72f)
 
     fun setBackgroundAlpha(context: Context, alpha: Float) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -172,7 +166,7 @@ object StorageManager {
 
     fun getDefaultElementColor(context: Context): Long =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getLong(KEY_DEFAULT_COLOR, 0xFF1E222D)
+            .getLong(KEY_DEFAULT_COLOR, 0x00000000L)
 
     fun setDefaultElementColor(context: Context, colorHex: Long) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -201,6 +195,20 @@ object StorageManager {
     fun setShowSelfInDrawer(context: Context, show: Boolean) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_SHOW_SELF_IN_DRAWER, show).apply()
+    }
+
+    fun saveWindowSnapshotBitmap(context: Context, itemId: String, bitmap: Bitmap): String? {
+        return try {
+            val dir = File(context.filesDir, "snapshots")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "win_$itemId.png")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 85, out)
+            }
+            file.absolutePath
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun copyUriToInternalStorage(
