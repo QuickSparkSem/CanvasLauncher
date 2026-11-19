@@ -1,31 +1,25 @@
 package com.example.canvaslauncher
 
-import android.app.Activity
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
-import android.content.Context
 import android.content.Intent
 import android.content.pm.LauncherApps
-import android.content.pm.PackageManager
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Process
+import android.os.UserManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.content.IntentCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.example.canvaslauncher.data.AppColorClassifier
 import com.example.canvaslauncher.data.AppInfo
 import com.example.canvaslauncher.data.StatusBarMode
 import com.example.canvaslauncher.data.StorageManager
@@ -33,346 +27,284 @@ import com.example.canvaslauncher.model.CanvasItem
 import com.example.canvaslauncher.model.ItemType
 import com.example.canvaslauncher.shizuku.VirtualDisplayWindowManager
 import com.example.canvaslauncher.ui.CanvasLauncherApp
-import rikka.shizuku.Shizuku
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
     companion object {
         private const val APPWIDGET_HOST_ID = 2048
-        private const val REQUEST_PICK_APPWIDGET = 101
-        private const val REQUEST_CONFIGURE_APPWIDGET = 102
-        private const val REQUEST_PICK_SHORTCUT_APP = 103
-        private const val REQUEST_CREATE_SHORTCUT = 104
     }
 
     private lateinit var appWidgetManager: AppWidgetManager
     private lateinit var appWidgetHost: AppWidgetHost
 
     private val canvasItems = mutableStateListOf<CanvasItem>()
-    private val appList = mutableStateListOf<AppInfo>()
-    private var incomingText by mutableStateOf<String?>(null)
-    private var incomingImageUri by mutableStateOf<Uri?>(null)
-    private var incomingAudioUri by mutableStateOf<Uri?>(null)
+    private val installedApps = mutableStateListOf<AppInfo>()
+
     private var shizukuReadyState by mutableStateOf(false)
+    private var incomingTextState by mutableStateOf<String?>(null)
+    private var incomingImageUriState by mutableStateOf<Uri?>(null)
+    private var incomingAudioUriState by mutableStateOf<Uri?>(null)
 
-    private val shizukuPermissionListener =
-        Shizuku.OnRequestPermissionResultListener { _, grantResult ->
-            shizukuReadyState = grantResult == PackageManager.PERMISSION_GRANTED
-            if (shizukuReadyState) {
-                Toast.makeText(this, "Shizuku collegato: finestre su tela attive!", Toast.LENGTH_SHORT).show()
-            }
+    private var pendingWidgetId: Int = -1
+
+    private val pickWidgetLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        val widgetId = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
+        if (result.resultCode == RESULT_OK && widgetId != -1) {
+            configureOrAddWidget(widgetId)
+        } else if (widgetId != -1) {
+            runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
         }
-
-    private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
-        shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
+        pendingWidgetId = -1
     }
 
-    private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
-        shizukuReadyState = false
+    private val configureWidgetLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val widgetId = result.data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
+        if (result.resultCode == RESULT_OK && widgetId != -1) {
+            addWidgetItemToCanvas(widgetId)
+        } else if (widgetId != -1) {
+            runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
+        }
+        pendingWidgetId = -1
+    }
+
+    private val pickShortcutLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            @Suppress("DEPRECATION")
+            val shortcutIntent = result.data?.getParcelableExtra<Intent>(Intent.EXTRA_SHORTCUT_INTENT)
+            @Suppress("DEPRECATION")
+            val name = result.data?.getStringExtra(Intent.EXTRA_SHORTCUT_NAME) ?: "Scorciatoia"
+            if (shortcutIntent != null) {
+                canvasItems.add(
+                    CanvasItem(
+                        id = UUID.randomUUID().toString(),
+                        title = name,
+                        shortcutIntentUri = shortcutIntent.toUri(Intent.URI_INTENT_SCHEME),
+                        x = 160f,
+                        y = 260f,
+                        widthDp = 105f,
+                        heightDp = 100f,
+                        type = ItemType.SYSTEM_SHORTCUT
+                    )
+                )
+                StorageManager.saveItems(this, canvasItems)
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
-        )
-        applyStatusBarMode(StorageManager.getStatusBarMode(this))
-
-        try {
-            Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
-            Shizuku.addBinderReceivedListenerSticky(shizukuBinderReceivedListener)
-            Shizuku.addBinderDeadListener(shizukuBinderDeadListener)
-        } catch (_: Throwable) {
-        }
-        shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
+        runCatching { enableEdgeToEdge() }
 
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, APPWIDGET_HOST_ID)
+        runCatching { appWidgetHost.startListening() }
 
         canvasItems.clear()
         canvasItems.addAll(StorageManager.loadItems(this))
-        loadInstalledAndArchivedApps()
-        extractShareIntent(intent)
+        refreshInstalledApps()
+        shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
+
+        handleIncomingIntent(intent)
 
         setContent {
             CanvasLauncherApp(
                 items = canvasItems,
-                appList = appList,
+                appList = installedApps,
                 appWidgetHost = appWidgetHost,
                 appWidgetManager = appWidgetManager,
                 shizukuReady = shizukuReadyState,
                 onRequestShizukuPermission = {
-                    VirtualDisplayWindowManager.requestShizukuPermission(this)
+                    VirtualDisplayWindowManager.requestShizukuPermission()
                     shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
                 },
-                onRequestPickSystemWidget = { startPickSystemWidget() },
-                onRequestPickSystemShortcut = { startPickSystemShortcut() },
+                onRequestPickSystemWidget = { launchSystemWidgetPicker() },
+                onRequestPickSystemShortcut = { launchSystemShortcutPicker() },
                 onStatusBarModeChanged = { mode -> applyStatusBarMode(mode) },
-                onShowSelfInDrawerChanged = { loadInstalledAndArchivedApps() },
-                incomingText = incomingText,
-                incomingImageUri = incomingImageUri,
-                incomingAudioUri = incomingAudioUri,
+                onShowSelfInDrawerChanged = { refreshInstalledApps() },
+                incomingText = incomingTextState,
+                incomingImageUri = incomingImageUriState,
+                incomingAudioUri = incomingAudioUriState,
                 onIncomingConsumed = {
-                    incomingText = null
-                    incomingImageUri = null
-                    incomingAudioUri = null
+                    incomingTextState = null
+                    incomingImageUriState = null
+                    incomingAudioUriState = null
                 }
             )
+        }
+
+        window.decorView.post {
+            applyStatusBarMode(StorageManager.getStatusBarMode(this))
         }
     }
 
     override fun onResume() {
         super.onResume()
         shizukuReadyState = VirtualDisplayWindowManager.isShizukuReady()
+        refreshInstalledApps()
     }
 
-    override fun onPause() {
-        super.onPause()
-        // Cattura screenshot di tutte le finestre aperte prima di blocco schermo o cambio app
-        VirtualDisplayWindowManager.captureAllSnapshots(this, canvasItems)
-        StorageManager.saveItems(this, canvasItems)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
-            Shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener)
-            Shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
-        } catch (_: Throwable) {
-        }
+        runCatching { appWidgetHost.stopListening() }
+        VirtualDisplayWindowManager.releaseAll()
     }
 
     private fun applyStatusBarMode(mode: StatusBarMode) {
-        val controller = WindowCompat.getInsetsController(window, window.decorView)
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (mode == StatusBarMode.HIDDEN) {
-            controller.hide(WindowInsetsCompat.Type.statusBars())
-        } else {
-            controller.show(WindowInsetsCompat.Type.statusBars())
+        runCatching {
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            if (mode == StatusBarMode.HIDDEN) {
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.statusBars())
+            } else {
+                controller.show(WindowInsetsCompat.Type.statusBars())
+            }
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        try {
-            appWidgetHost.startListening()
-        } catch (_: Exception) {
-        }
-    }
+    private fun refreshInstalledApps() {
+        runCatching {
+            val launcherApps = getSystemService(LAUNCHER_APPS_SERVICE) as LauncherApps
+            val userManager = getSystemService(USER_SERVICE) as UserManager
+            val showSelf = StorageManager.getShowSelfInDrawer(this)
+            val result = mutableListOf<AppInfo>()
+            val seen = mutableSetOf<String>()
 
-    override fun onStop() {
-        super.onStop()
-        try {
-            appWidgetHost.stopListening()
-        } catch (_: Exception) {
-        }
-    }
+            for (profile in userManager.userProfiles) {
+                val activities = runCatching {
+                    launcherApps.getActivityList(null, profile)
+                }.getOrDefault(emptyList())
 
-    @Suppress("DEPRECATION")
-    private fun startPickSystemWidget() {
-        val appWidgetId = appWidgetHost.allocateAppWidgetId()
-        val pickIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply {
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-        }
-        startActivityForResult(pickIntent, REQUEST_PICK_APPWIDGET)
-    }
+                for (info in activities) {
+                    val pkg = info.applicationInfo.packageName
+                    if (!showSelf && pkg == packageName) continue
+                    val key = "$pkg:${profile.hashCode()}"
+                    if (!seen.add(key)) continue
 
-    @Suppress("DEPRECATION")
-    private fun startPickSystemShortcut() {
-        val shortcutPickIntent = Intent(Intent.ACTION_PICK_ACTIVITY).apply {
-            putExtra(Intent.EXTRA_INTENT, Intent(Intent.ACTION_CREATE_SHORTCUT))
-            putExtra(Intent.EXTRA_TITLE, "Scegli scorciatoia (es. Shortcut Maker)")
-        }
-        startActivityForResult(shortcutPickIntent, REQUEST_PICK_SHORTCUT_APP)
-    }
-
-    @Suppress("DEPRECATION")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode == Activity.RESULT_OK && data != null) {
-            when (requestCode) {
-                REQUEST_PICK_APPWIDGET -> {
-                    val appWidgetId = data.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1)
-                    if (appWidgetId != -1) {
-                        val info = appWidgetManager.getAppWidgetInfo(appWidgetId)
-                        if (info?.configure != null) {
-                            appWidgetHost.startAppWidgetConfigureActivityForResult(
-                                this,
-                                appWidgetId,
-                                0,
-                                REQUEST_CONFIGURE_APPWIDGET,
-                                null
-                            )
-                        } else {
-                            addWidgetCardToCanvas(appWidgetId)
-                        }
+                    val isArchived = if (Build.VERSION.SDK_INT >= 35) {
+                        runCatching { info.applicationInfo.isArchived }.getOrDefault(false)
+                    } else {
+                        false
                     }
-                }
-                REQUEST_CONFIGURE_APPWIDGET -> {
-                    val appWidgetId = data.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1)
-                    if (appWidgetId != -1) {
-                        addWidgetCardToCanvas(appWidgetId)
-                    }
-                }
-                REQUEST_PICK_SHORTCUT_APP -> {
-                    startActivityForResult(data, REQUEST_CREATE_SHORTCUT)
-                }
-                REQUEST_CREATE_SHORTCUT -> {
-                    val shortcutName = data.getStringExtra(Intent.EXTRA_SHORTCUT_NAME) ?: "Scorciatoia"
-                    val shortcutIntent = IntentCompat.getParcelableExtra(
-                        data,
-                        Intent.EXTRA_SHORTCUT_INTENT,
-                        Intent::class.java
-                    )
-                    if (shortcutIntent != null) {
-                        val intentUri = shortcutIntent.toUri(Intent.URI_INTENT_SCHEME)
-                        canvasItems.add(
-                            CanvasItem(
-                                id = UUID.randomUUID().toString(),
-                                title = shortcutName,
-                                shortcutIntentUri = intentUri,
-                                x = 140f,
-                                y = 260f,
-                                widthDp = 110f,
-                                heightDp = 105f,
-                                colorHex = 0x00000000L,
-                                type = ItemType.SYSTEM_SHORTCUT
-                            )
+
+                    result.add(
+                        AppInfo(
+                            label = info.label?.toString() ?: pkg,
+                            packageName = pkg,
+                            icon = info.getBadgedIcon(0),
+                            componentName = info.componentName,
+                            userHandle = profile,
+                            isArchived = isArchived
                         )
-                        StorageManager.saveItems(this, canvasItems)
-                    }
+                    )
                 }
             }
-        } else if (resultCode == Activity.RESULT_CANCELED && data != null) {
-            val appWidgetId = data.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1)
-            if (appWidgetId != -1) {
-                appWidgetHost.deleteAppWidgetId(appWidgetId)
+
+            if (showSelf && result.none { it.packageName == packageName }) {
+                runCatching {
+                    val selfInfo = packageManager.getApplicationInfo(packageName, 0)
+                    result.add(
+                        AppInfo(
+                            label = packageManager.getApplicationLabel(selfInfo).toString(),
+                            packageName = packageName,
+                            icon = packageManager.getApplicationIcon(selfInfo)
+                        )
+                    )
+                }
             }
+
+            installedApps.clear()
+            installedApps.addAll(result.sortedBy { it.label.lowercase() })
         }
     }
 
-    private fun addWidgetCardToCanvas(appWidgetId: Int) {
-        val info = appWidgetManager.getAppWidgetInfo(appWidgetId)
+    private fun launchSystemWidgetPicker() {
+        runCatching {
+            val widgetId = appWidgetHost.allocateAppWidgetId()
+            pendingWidgetId = widgetId
+            val pickIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply {
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+            }
+            pickWidgetLauncher.launch(pickIntent)
+        }.onFailure {
+            Toast.makeText(this, "Selettore widget non disponibile", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun configureOrAddWidget(widgetId: Int) {
+        val info = runCatching { appWidgetManager.getAppWidgetInfo(widgetId) }.getOrNull()
+        if (info != null && info.configure != null) {
+            pendingWidgetId = widgetId
+            val configIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE).apply {
+                component = info.configure
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+            }
+            configureWidgetLauncher.launch(configIntent)
+        } else {
+            addWidgetItemToCanvas(widgetId)
+        }
+    }
+
+    private fun addWidgetItemToCanvas(widgetId: Int) {
+        val info = runCatching { appWidgetManager.getAppWidgetInfo(widgetId) }.getOrNull()
         val label = info?.loadLabel(packageManager) ?: "Widget"
+        val wDp = (info?.minWidth?.toFloat()?.div(resources.displayMetrics.density) ?: 220f).coerceIn(140f, 340f)
+        val hDp = (info?.minHeight?.toFloat()?.div(resources.displayMetrics.density) ?: 140f).coerceIn(100f, 320f)
+
         canvasItems.add(
             CanvasItem(
                 id = UUID.randomUUID().toString(),
                 title = label,
-                appWidgetId = appWidgetId,
+                appWidgetId = widgetId,
                 x = 120f,
-                y = 240f,
-                widthDp = 250f,
-                heightDp = 180f,
-                colorHex = 0x00000000L,
+                y = 220f,
+                widthDp = wDp,
+                heightDp = hDp,
                 type = ItemType.SYSTEM_WIDGET
             )
         )
         StorageManager.saveItems(this, canvasItems)
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        extractShareIntent(intent)
+    private fun launchSystemShortcutPicker() {
+        runCatching {
+            pickShortcutLauncher.launch(Intent(Intent.ACTION_CREATE_SHORTCUT))
+        }.onFailure {
+            Toast.makeText(this, "Nessuna scorciatoia disponibile", Toast.LENGTH_SHORT).show()
+        }
     }
 
-    private fun extractShareIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_SEND) {
-            val type = intent.type
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        if (intent.action == Intent.ACTION_SEND) {
+            val type = intent.type ?: ""
             when {
-                type == "text/plain" -> {
-                    incomingText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                type.startsWith("text/") -> {
+                    incomingTextState = intent.getStringExtra(Intent.EXTRA_TEXT)
                 }
-                type?.startsWith("image/") == true -> {
-                    incomingImageUri = IntentCompat.getParcelableExtra(
-                        intent,
-                        Intent.EXTRA_STREAM,
-                        Uri::class.java
-                    )
+                type.startsWith("image/") -> {
+                    @Suppress("DEPRECATION")
+                    incomingImageUriState = intent.getParcelableExtra(Intent.EXTRA_STREAM)
                 }
-                type?.startsWith("audio/") == true -> {
-                    incomingAudioUri = IntentCompat.getParcelableExtra(
-                        intent,
-                        Intent.EXTRA_STREAM,
-                        Uri::class.java
-                    )
+                type.startsWith("audio/") -> {
+                    @Suppress("DEPRECATION")
+                    incomingAudioUriState = intent.getParcelableExtra(Intent.EXTRA_STREAM)
                 }
             }
         }
-    }
-
-    private fun loadInstalledAndArchivedApps() {
-        val showSelf = StorageManager.getShowSelfInDrawer(this)
-        val loadedMap = linkedMapOf<String, AppInfo>()
-
-        try {
-            val launcherApps = getSystemService(Context.LAUNCHER_APPS_SERVICE) as LauncherApps
-            val activityList = launcherApps.getActivityList(null, Process.myUserHandle())
-            for (activityInfo in activityList) {
-                val pkg = activityInfo.componentName.packageName
-                if (!showSelf && pkg == this.packageName) continue
-
-                val label = activityInfo.label.toString()
-                val icon = activityInfo.getIcon(0)
-                val isArchived = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-                    activityInfo.applicationInfo.isArchived
-                } else {
-                    false
-                }
-                val colorCat = AppColorClassifier.classifyDrawable(icon)
-                loadedMap[pkg] = AppInfo(
-                    label = label,
-                    packageName = pkg,
-                    icon = icon,
-                    colorCategory = colorCat,
-                    isArchived = isArchived,
-                    componentName = activityInfo.componentName,
-                    userHandle = activityInfo.user
-                )
-            }
-        } catch (_: Exception) {
-        }
-
-        val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-        }
-        val resolvedInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            packageManager.queryIntentActivities(
-                mainIntent,
-                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ARCHIVED_PACKAGES)
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            packageManager.queryIntentActivities(mainIntent, 0)
-        }
-
-        for (info in resolvedInfos) {
-            val pkg = info.activityInfo.packageName
-            if ((!showSelf && pkg == this.packageName) || loadedMap.containsKey(pkg)) continue
-
-            val label = info.loadLabel(packageManager).toString()
-            val icon = info.loadIcon(packageManager)
-            val isArchived = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-                info.activityInfo.applicationInfo.isArchived
-            } else {
-                false
-            }
-            val colorCat = AppColorClassifier.classifyDrawable(icon)
-            loadedMap[pkg] = AppInfo(
-                label = label,
-                packageName = pkg,
-                icon = icon,
-                colorCategory = colorCat,
-                isArchived = isArchived
-            )
-        }
-
-        appList.clear()
-        appList.addAll(loadedMap.values.sortedBy { it.label.lowercase() })
     }
 }
