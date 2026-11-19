@@ -23,6 +23,8 @@ data class CanvasItem(
     val fileUri: String? = null,
     val fileMimeType: String? = null,
     val url: String? = null,
+    val browserPackage: String? = null,
+    val adBlockEnabled: Boolean = true,
     val lastSnapshotPath: String? = null,
     val imeFallbackDisplay: Boolean = true,
     val appWidgetId: Int = -1,
