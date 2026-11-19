@@ -8,10 +8,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -47,13 +43,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -72,10 +66,9 @@ private val AlphabetIndex = listOf("#") + ('A'..'Z').map { it.toString() }
 
 fun triggerDrawerHapticTick(context: Context, strength: Float) {
     if (strength <= 0.01f) return
-    try {
+    runCatching {
         val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-            vm?.defaultVibrator
+            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
         } else {
             @Suppress("DEPRECATION")
             context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
@@ -83,21 +76,18 @@ fun triggerDrawerHapticTick(context: Context, strength: Float) {
 
         if (!vibrator.hasVibrator()) return
         val durationMs = (6 + (strength * 28f)).toLong().coerceIn(6L, 35L)
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val amplitude = (strength * 255f).toInt().coerceIn(1, 255)
-            if (vibrator.hasAmplitudeControl()) {
-                vibrator.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
-            } else {
-                vibrator.vibrate(
-                    VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE)
+            val amp = (strength * 255f).toInt().coerceIn(1, 255)
+            vibrator.vibrate(
+                VibrationEffect.createOneShot(
+                    durationMs,
+                    if (vibrator.hasAmplitudeControl()) amp else VibrationEffect.DEFAULT_AMPLITUDE
                 )
-            }
+            )
         } else {
             @Suppress("DEPRECATION")
             vibrator.vibrate(durationMs)
         }
-    } catch (_: Throwable) {
     }
 }
 
@@ -105,6 +95,7 @@ fun triggerDrawerHapticTick(context: Context, strength: Float) {
 @Composable
 fun AppDrawerOverlay(
     appList: List<AppInfo>,
+    showSelfInDrawer: Boolean,
     drawerAlpha: Float,
     hapticStrength: Float,
     onLaunchApp: (AppInfo) -> Unit,
@@ -125,12 +116,31 @@ fun AppDrawerOverlay(
     val selectedPackages = remember { mutableStateListOf<String>() }
     var actionTargetApp by remember { mutableStateOf<AppInfo?>(null) }
 
-    val waveProgress = remember { Animatable(0f) }
-    var waveColor by remember { mutableStateOf(Color.Transparent) }
-    var waveCenter by remember { mutableStateOf(Offset(500f, 1800f)) }
+    // Assicura che l'icona di Canvas Launcher sia presente nel drawer come un'app normale
+    val effectiveAppList = remember(appList, showSelfInDrawer) {
+        val selfPkg = context.packageName
+        val withoutSelf = appList.filterNot { it.packageName == selfPkg }
+        if (!showSelfInDrawer) {
+            withoutSelf
+        } else {
+            val existingSelf = appList.find { it.packageName == selfPkg }
+            val selfEntry = existingSelf ?: runCatching {
+                val pm = context.packageManager
+                val appInfo = pm.getApplicationInfo(selfPkg, 0)
+                AppInfo(
+                    label = pm.getApplicationLabel(appInfo).toString(),
+                    packageName = selfPkg,
+                    icon = pm.getApplicationIcon(appInfo)
+                )
+            }.getOrNull()
 
-    val filteredApps = remember(searchQuery, selectedColor, appList) {
-        appList.filter { app ->
+            val combined = if (selfEntry != null) withoutSelf + selfEntry else withoutSelf
+            combined.sortedBy { it.label.lowercase() }
+        }
+    }
+
+    val filteredApps = remember(searchQuery, selectedColor, effectiveAppList) {
+        effectiveAppList.filter { app ->
             val matchesQuery = searchQuery.isBlank() ||
                 app.label.contains(searchQuery, ignoreCase = true)
             val matchesColor = selectedColor == AppColorCategory.ALL ||
@@ -152,20 +162,14 @@ fun AppDrawerOverlay(
         triggerDrawerHapticTick(context, hapticStrength)
         val targetIndex = filteredApps.indexOfFirst { app ->
             val first = app.label.trim().firstOrNull()?.uppercaseChar()
-            if (letter == "#") {
-                first == null || first !in 'A'..'Z'
-            } else {
-                first?.toString() == letter
-            }
+            if (letter == "#") first == null || first !in 'A'..'Z'
+            else first?.toString() == letter
         }
         if (targetIndex >= 0) {
-            coroutineScope.launch {
-                gridState.scrollToItem(targetIndex)
-            }
+            coroutineScope.launch { gridState.scrollToItem(targetIndex) }
         }
     }
 
-    // Chiusura con swipe veloce verso il basso quando la griglia è in cima
     val swipeDownCloseConnection = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -192,7 +196,7 @@ fun AppDrawerOverlay(
             }
 
             override suspend fun onPreFling(available: Velocity): Velocity {
-                if (drawerPullOffsetY > 170f || (drawerPullOffsetY > 35f && available.y > 850f)) {
+                if (drawerPullOffsetY > 160f || (drawerPullOffsetY > 30f && available.y > 800f)) {
                     drawerPullOffsetY = 0f
                     onDismiss()
                     return available
@@ -217,59 +221,30 @@ fun AppDrawerOverlay(
             .navigationBarsPadding()
             .nestedScroll(swipeDownCloseConnection)
     ) {
-        if (waveProgress.value > 0f && waveProgress.value < 1f) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val maxRadius = size.height * 1.35f
-                val currentRadius = maxRadius * waveProgress.value
-                val fadeAlpha = (1f - waveProgress.value).coerceIn(0f, 1f)
-
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            waveColor.copy(alpha = 0.04f * fadeAlpha),
-                            waveColor.copy(alpha = 0.36f * fadeAlpha),
-                            waveColor.copy(alpha = 0.0f)
-                        ),
-                        center = waveCenter,
-                        radius = (currentRadius + 160f).coerceAtLeast(10f)
-                    ),
-                    radius = currentRadius + 160f,
-                    center = waveCenter
-                )
-
-                drawCircle(
-                    color = waveColor.copy(alpha = 0.55f * fadeAlpha),
-                    radius = currentRadius,
-                    center = waveCenter,
-                    style = Stroke(width = 14f * (1f - waveProgress.value * 0.5f))
-                )
-            }
-        }
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = 8.dp)
         ) {
-            // Area superiore trascinabile verso il basso per chiudere rapidamente il drawer
+            // Intestazione trascinabile verso il basso per chiudere il drawer
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .fillMaxWidth()
                     .pointerInput(Unit) {
-                        var headerDragY = 0f
+                        var dragY = 0f
                         detectVerticalDragGestures(
-                            onDragStart = { headerDragY = 0f },
+                            onDragStart = { dragY = 0f },
                             onDragEnd = {
-                                if (headerDragY > 110f) onDismiss()
+                                if (dragY > 100f) onDismiss()
                                 drawerPullOffsetY = 0f
                             },
                             onDragCancel = { drawerPullOffsetY = 0f }
                         ) { change, dragAmount ->
                             change.consume()
-                            if (dragAmount > 0f || headerDragY > 0f) {
-                                headerDragY = (headerDragY + dragAmount).coerceAtLeast(0f)
-                                drawerPullOffsetY = headerDragY
+                            if (dragAmount > 0f || dragY > 0f) {
+                                dragY = (dragY + dragAmount).coerceAtLeast(0f)
+                                drawerPullOffsetY = dragY
                             }
                         }
                     }
@@ -295,7 +270,7 @@ fun AppDrawerOverlay(
                             .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
                         Text(
-                            text = "${selectedPackages.size} app selezionate",
+                            text = "${selectedPackages.size} selezionate",
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
@@ -303,10 +278,8 @@ fun AppDrawerOverlay(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Button(
                                 onClick = {
-                                    val chosen = appList.filter { selectedPackages.contains(it.packageName) }
-                                    if (chosen.isNotEmpty()) {
-                                        onAddAppsToCanvas(chosen)
-                                    }
+                                    val chosen = effectiveAppList.filter { selectedPackages.contains(it.packageName) }
+                                    if (chosen.isNotEmpty()) onAddAppsToCanvas(chosen)
                                 },
                                 enabled = selectedPackages.isNotEmpty(),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
@@ -318,7 +291,7 @@ fun AppDrawerOverlay(
                                 multiSelectMode = false
                                 selectedPackages.clear()
                             }) {
-                                Icon(Icons.Rounded.Close, "Annulla selezione", tint = Color.White)
+                                Icon(Icons.Rounded.Close, "Annulla", tint = Color.White)
                             }
                         }
                     }
@@ -340,11 +313,7 @@ fun AppDrawerOverlay(
                                 )
                             },
                             leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Rounded.Search,
-                                    contentDescription = null,
-                                    tint = Color(0xFF94A3B8)
-                                )
+                                Icon(Icons.Rounded.Search, null, tint = Color(0xFF94A3B8))
                             },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
@@ -369,11 +338,7 @@ fun AppDrawerOverlay(
                                 .background(Color(0xAA181C26))
                                 .border(1.dp, Color(0xFF2B3242), RoundedCornerShape(16.dp))
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Chiudi menu app",
-                                tint = Color.White
-                            )
+                            Icon(Icons.Rounded.Close, "Chiudi", tint = Color.White)
                         }
                     }
                 }
@@ -387,7 +352,7 @@ fun AppDrawerOverlay(
                 ) {
                     Text(
                         text = if (multiSelectMode) "Tocca le app da aggiungere insieme"
-                        else "Scorri giù per chiudere  •  Tieni premuto per finestra",
+                        else "Scorri giù per chiudere  •  Tieni premuto per opzioni",
                         color = Color(0xFF94A3B8),
                         fontSize = 11.sp
                     )
@@ -408,26 +373,14 @@ fun AppDrawerOverlay(
                     .fillMaxWidth()
             ) {
                 if (filteredApps.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Nessuna app trovata",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 14.sp
-                        )
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Nessuna app trovata", color = Color(0xFF94A3B8), fontSize = 14.sp)
                     }
                 } else {
                     LazyVerticalGrid(
                         state = gridState,
                         columns = GridCells.Fixed(4),
-                        contentPadding = PaddingValues(
-                            start = 14.dp,
-                            end = 36.dp,
-                            top = 8.dp,
-                            bottom = 16.dp
-                        ),
+                        contentPadding = PaddingValues(start = 14.dp, end = 36.dp, top = 8.dp, bottom = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxSize()
@@ -445,14 +398,14 @@ fun AppDrawerOverlay(
                                             if (multiSelectMode) {
                                                 if (isChecked) selectedPackages.remove(app.packageName)
                                                 else selectedPackages.add(app.packageName)
+                                            } else if (app.packageName == context.packageName) {
+                                                onDismiss()
                                             } else {
                                                 onLaunchApp(app)
                                             }
                                         },
                                         onLongClick = {
-                                            if (!multiSelectMode) {
-                                                actionTargetApp = app
-                                            }
+                                            if (!multiSelectMode) actionTargetApp = app
                                         }
                                     )
                                     .padding(vertical = 4.dp, horizontal = 2.dp)
@@ -490,7 +443,7 @@ fun AppDrawerOverlay(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Rounded.CloudDownload,
-                                                contentDescription = "App archiviata",
+                                                contentDescription = null,
                                                 tint = Color(0xFF38BDF8),
                                                 modifier = Modifier.size(12.dp)
                                             )
@@ -511,7 +464,7 @@ fun AppDrawerOverlay(
                     }
                 }
 
-                // Indice laterale scorrevole A-Z con vibrazione aptica
+                // Indice alfabetico laterale con vibrazione
                 var indexHeightPx by remember { mutableFloatStateOf(1f) }
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -529,16 +482,14 @@ fun AppDrawerOverlay(
                         .pointerInput(filteredApps, hapticStrength) {
                             detectVerticalDragGestures(
                                 onDragStart = { offset ->
-                                    val ratio = (offset.y / indexHeightPx).coerceIn(0f, 0.999f)
-                                    val idx = (ratio * AlphabetIndex.size).toInt()
+                                    val idx = ((offset.y / indexHeightPx).coerceIn(0f, 0.999f) * AlphabetIndex.size).toInt()
                                     scrollToLetterImmediate(AlphabetIndex[idx])
                                 },
                                 onDragEnd = { activeLetter = null },
                                 onDragCancel = { activeLetter = null }
                             ) { change, _ ->
                                 change.consume()
-                                val ratio = (change.position.y / indexHeightPx).coerceIn(0f, 0.999f)
-                                val idx = (ratio * AlphabetIndex.size).toInt()
+                                val idx = ((change.position.y / indexHeightPx).coerceIn(0f, 0.999f) * AlphabetIndex.size).toInt()
                                 scrollToLetterImmediate(AlphabetIndex[idx])
                             }
                         }
@@ -564,7 +515,7 @@ fun AppDrawerOverlay(
                 }
             }
 
-            // Barra inferiore solo pallini colore
+            // Barra filtro colori
             Surface(
                 color = Color(0xCC141822),
                 modifier = Modifier
@@ -580,17 +531,8 @@ fun AppDrawerOverlay(
                 ) {
                     AppColorCategory.entries.forEach { category ->
                         val isSelected = selectedColor == category
-                        var swatchCenter by remember { mutableStateOf(Offset(500f, 1800f)) }
-
                         Box(
                             modifier = Modifier
-                                .onGloballyPositioned { coords ->
-                                    val pos = coords.positionInRoot()
-                                    swatchCenter = Offset(
-                                        pos.x + coords.size.width / 2f,
-                                        pos.y + coords.size.height / 2f
-                                    )
-                                }
                                 .size(if (isSelected) 34.dp else 28.dp)
                                 .clip(CircleShape)
                                 .background(
@@ -607,10 +549,7 @@ fun AppDrawerOverlay(
                                         )
                                     } else {
                                         Brush.linearGradient(
-                                            listOf(
-                                                Color(category.swatchHex),
-                                                Color(category.swatchHex)
-                                            )
+                                            listOf(Color(category.swatchHex), Color(category.swatchHex))
                                         )
                                     }
                                 )
@@ -619,32 +558,14 @@ fun AppDrawerOverlay(
                                     color = if (isSelected) Color.White else Color(0xFF475569),
                                     shape = CircleShape
                                 )
-                                .clickable {
-                                    selectedColor = category
-                                    waveCenter = swatchCenter
-                                    waveColor = if (category == AppColorCategory.ALL) {
-                                        Color(0xFF38BDF8)
-                                    } else {
-                                        Color(category.swatchHex)
-                                    }
-                                    coroutineScope.launch {
-                                        waveProgress.snapTo(0f)
-                                        waveProgress.animateTo(
-                                            targetValue = 1f,
-                                            animationSpec = tween(
-                                                durationMillis = 950,
-                                                easing = FastOutSlowInEasing
-                                            )
-                                        )
-                                    }
-                                }
+                                .clickable { selectedColor = category }
                         )
                     }
                 }
             }
         }
 
-        // Finestra opzioni app
+        // Dialog opzioni app
         if (actionTargetApp != null) {
             val targetApp = actionTargetApp!!
             AlertDialog(
@@ -697,13 +618,13 @@ fun AppDrawerOverlay(
                         OutlinedButton(
                             onClick = {
                                 actionTargetApp = null
-                                try {
-                                    val infoIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                        data = Uri.parse("package:${targetApp.packageName}")
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    context.startActivity(infoIntent)
-                                } catch (_: Exception) {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                            data = Uri.parse("package:${targetApp.packageName}")
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                    )
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()
