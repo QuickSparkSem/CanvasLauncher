@@ -1,16 +1,27 @@
 package com.example.canvaslauncher.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
+import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
+import android.view.MotionEvent
+import android.view.Surface
+import android.view.TextureView
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -32,6 +43,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.AspectRatio
@@ -42,6 +55,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Gesture
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.NearMe
@@ -49,7 +63,10 @@ import androidx.compose.material.icons.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.OpenWith
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhotoLibrary
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SettingsApplications
 import androidx.compose.material.icons.rounded.Shortcut
@@ -66,6 +83,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -75,9 +93,12 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
@@ -93,6 +114,7 @@ import com.example.canvaslauncher.data.StatusBarMode
 import com.example.canvaslauncher.data.StorageManager
 import com.example.canvaslauncher.model.CanvasItem
 import com.example.canvaslauncher.model.ItemType
+import com.example.canvaslauncher.shizuku.VirtualDisplayWindowManager
 import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -106,6 +128,8 @@ fun CanvasLauncherApp(
     appList: List<AppInfo>,
     appWidgetHost: AppWidgetHost,
     appWidgetManager: AppWidgetManager,
+    shizukuReady: Boolean,
+    onRequestShizukuPermission: () -> Unit,
     onRequestPickSystemWidget: () -> Unit,
     onRequestPickSystemShortcut: () -> Unit,
     onStatusBarModeChanged: (StatusBarMode) -> Unit,
@@ -122,9 +146,10 @@ fun CanvasLauncherApp(
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showPhotoChoiceDialog by remember { mutableStateOf(false) }
     var showAudioDialog by remember { mutableStateOf(false) }
+    var showWebAppDialog by remember { mutableStateOf(false) }
 
-    // Stato ridimensionamento tramite angoli di un elemento
     var resizingItemId by remember { mutableStateOf<String?>(null) }
+    var windowSessionRevision by remember { mutableIntStateOf(0) }
 
     BackHandler(enabled = true) {
         when {
@@ -133,10 +158,10 @@ fun CanvasLauncherApp(
             showSettingsDialog -> showSettingsDialog = false
             showPhotoChoiceDialog -> showPhotoChoiceDialog = false
             showAudioDialog -> showAudioDialog = false
+            showWebAppDialog -> showWebAppDialog = false
         }
     }
 
-    // Impostazioni persistenti
     var backgroundAlpha by remember { mutableFloatStateOf(StorageManager.getBackgroundAlpha(context)) }
     var drawerAlpha by remember { mutableFloatStateOf(StorageManager.getDrawerAlpha(context)) }
     var statusBarMode by remember { mutableStateOf(StorageManager.getStatusBarMode(context)) }
@@ -145,31 +170,29 @@ fun CanvasLauncherApp(
 
     var activeTool by remember { mutableStateOf(CanvasTool.PAN) }
 
-    // Stato Telecamera 2D
+    // Stato Telecamera 2D e dimensioni viewport
     var cameraOffset by remember { mutableStateOf(Offset.Zero) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
+    var viewportWidthPx by remember { mutableFloatStateOf(1080f) }
+    var viewportHeightPx by remember { mutableFloatStateOf(2200f) }
 
-    // Stato Cursore e Lazo
     var cursorPos by remember { mutableStateOf(Offset(360f, 560f)) }
     val lassoPoints = remember { mutableStateListOf<Offset>() }
     val selectedIds = remember { mutableStateListOf<String>() }
     var isDraggingSelected by remember { mutableStateOf(false) }
 
-    // Menu Contestuale
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuScreenPos by remember { mutableStateOf(Offset.Zero) }
     var targetItemForMenu by remember { mutableStateOf<CanvasItem?>(null) }
 
-    // Finestra Modifica Scheda
     var editingItem by remember { mutableStateOf<CanvasItem?>(null) }
     var editTitleText by remember { mutableStateOf("") }
     var editContentText by remember { mutableStateOf("") }
     var editColorHex by remember { mutableLongStateOf(defaultElementColor) }
 
-    // Finestra Avvio Sessione di Lavoro
     var activeSessionDialogItem by remember { mutableStateOf<CanvasItem?>(null) }
 
-    // Riproduzione Audio attivo
+    // Riproduzione Audio
     var playingAudioId by remember { mutableStateOf<String?>(null) }
     val activePlayer = remember { mutableStateOf<MediaPlayer?>(null) }
 
@@ -213,25 +236,61 @@ fun CanvasLauncherApp(
         }
     }
 
-    // Selettore Foto dalla Galleria
+    fun openAppAsCanvasWindow(app: AppInfo, worldX: Float? = null, worldY: Float? = null) {
+        val wx = worldX ?: ((-cameraOffset.x + 80f) / zoomScale)
+        val wy = worldY ?: ((-cameraOffset.y + 180f) / zoomScale)
+        val winWidthDp = 300f
+        val winHeightDp = 430f
+
+        val newItem = CanvasItem(
+            id = UUID.randomUUID().toString(),
+            title = app.label,
+            packageName = app.packageName,
+            x = wx,
+            y = wy,
+            widthDp = winWidthDp,
+            heightDp = winHeightDp,
+            colorHex = 0xFF141822L,
+            type = ItemType.APP_WINDOW
+        )
+
+        val wPx = (winWidthDp * density.density).roundToInt()
+        val hPx = ((winHeightDp - 36f) * density.density).roundToInt()
+
+        VirtualDisplayWindowManager.launchAppInWindowOrFallback(
+            context = context,
+            item = newItem,
+            widthPx = wPx,
+            heightPx = hPx,
+            onVirtualDisplayCreated = {
+                items.add(newItem)
+                StorageManager.saveItems(context, items)
+                windowSessionRevision++
+            },
+            onFallbackFreeformLaunched = {
+                // In ripiego Freeform l'app si apre in finestra di sistema senza lasciare riquadri vuoti
+            }
+        )
+    }
+
     val galleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             val savedPath = StorageManager.copyUriToInternalStorage(context, uri, "snapshots", "jpg")
             if (savedPath != null) {
-                val worldX = (-cameraOffset.x + 200f) / zoomScale
-                val worldY = (-cameraOffset.y + 320f) / zoomScale
+                val worldX = (-cameraOffset.x + 180f) / zoomScale
+                val worldY = (-cameraOffset.y + 300f) / zoomScale
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
-                        title = "Snapshot Galleria",
+                        title = "Foto",
                         imagePath = savedPath,
                         x = worldX,
                         y = worldY,
-                        widthDp = 220f,
-                        heightDp = 180f,
-                        colorHex = defaultElementColor,
+                        widthDp = 190f,
+                        heightDp = 175f,
+                        colorHex = 0x00000000L,
                         type = ItemType.IMAGE_SNAPSHOT
                     )
                 )
@@ -240,7 +299,6 @@ fun CanvasLauncherApp(
         }
     }
 
-    // Fotocamera: scatto al volo
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
@@ -249,18 +307,18 @@ fun CanvasLauncherApp(
         if (success && uri != null) {
             val savedPath = StorageManager.copyUriToInternalStorage(context, uri, "snapshots", "jpg")
             if (savedPath != null) {
-                val worldX = (-cameraOffset.x + 200f) / zoomScale
-                val worldY = (-cameraOffset.y + 320f) / zoomScale
+                val worldX = (-cameraOffset.x + 180f) / zoomScale
+                val worldY = (-cameraOffset.y + 300f) / zoomScale
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
-                        title = "Scatto Rapido",
+                        title = "Scatto",
                         imagePath = savedPath,
                         x = worldX,
                         y = worldY,
-                        widthDp = 220f,
-                        heightDp = 180f,
-                        colorHex = defaultElementColor,
+                        widthDp = 190f,
+                        heightDp = 175f,
+                        colorHex = 0x00000000L,
                         type = ItemType.IMAGE_SNAPSHOT
                     )
                 )
@@ -295,7 +353,6 @@ fun CanvasLauncherApp(
         }
     }
 
-    // Selettore File Audio dall'archivio
     val audioFilePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -303,19 +360,18 @@ fun CanvasLauncherApp(
             val name = StorageManager.getDisplayNameFromUri(context, uri)
             val savedPath = StorageManager.copyUriToInternalStorage(context, uri, "audio_memos", "m4a")
             if (savedPath != null) {
-                val worldX = (-cameraOffset.x + 200f) / zoomScale
-                val worldY = (-cameraOffset.y + 320f) / zoomScale
+                val worldX = (-cameraOffset.x + 180f) / zoomScale
+                val worldY = (-cameraOffset.y + 300f) / zoomScale
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
                         title = name,
-                        content = "File audio allegato",
                         audioPath = savedPath,
                         x = worldX,
                         y = worldY,
-                        widthDp = 210f,
-                        heightDp = 120f,
-                        colorHex = defaultElementColor,
+                        widthDp = 115f,
+                        heightDp = 105f,
+                        colorHex = 0x00000000L,
                         type = ItemType.AUDIO_MEMO
                     )
                 )
@@ -324,7 +380,6 @@ fun CanvasLauncherApp(
         }
     }
 
-    // Selettore Collegamento File dall'Archivio (come Desktop PC)
     val fileLinkPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -338,20 +393,19 @@ fun CanvasLauncherApp(
             }
             val displayName = StorageManager.getDisplayNameFromUri(context, uri)
             val mimeType = context.contentResolver.getType(uri) ?: "*/*"
-            val worldX = (-cameraOffset.x + 200f) / zoomScale
-            val worldY = (-cameraOffset.y + 320f) / zoomScale
+            val worldX = (-cameraOffset.x + 180f) / zoomScale
+            val worldY = (-cameraOffset.y + 300f) / zoomScale
             items.add(
                 CanvasItem(
                     id = UUID.randomUUID().toString(),
                     title = displayName,
-                    content = "Collegamento file archivio",
                     fileUri = uri.toString(),
                     fileMimeType = mimeType,
                     x = worldX,
                     y = worldY,
-                    widthDp = 195f,
-                    heightDp = 115f,
-                    colorHex = defaultElementColor,
+                    widthDp = 110f,
+                    heightDp = 105f,
+                    colorHex = 0x00000000L,
                     type = ItemType.FILE_LINK
                 )
             )
@@ -359,26 +413,42 @@ fun CanvasLauncherApp(
         }
     }
 
-    // Ricezione Note, Immagini o Audio condivisi da altre App
     LaunchedEffect(incomingText, incomingImageUri, incomingAudioUri) {
         var added = false
-        val worldX = (-cameraOffset.x + 190f) / zoomScale
-        val worldY = (-cameraOffset.y + 290f) / zoomScale
+        val worldX = (-cameraOffset.x + 170f) / zoomScale
+        val worldY = (-cameraOffset.y + 280f) / zoomScale
 
         if (!incomingText.isNullOrBlank()) {
-            items.add(
-                CanvasItem(
-                    id = UUID.randomUUID().toString(),
-                    title = "Nota Ricevuta",
-                    content = incomingText,
-                    x = worldX,
-                    y = worldY,
-                    widthDp = 215f,
-                    heightDp = 150f,
-                    colorHex = defaultElementColor,
-                    type = ItemType.NOTE
+            val trimmed = incomingText.trim()
+            if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                items.add(
+                    CanvasItem(
+                        id = UUID.randomUUID().toString(),
+                        title = trimmed.removePrefix("https://").removePrefix("http://").take(26),
+                        url = trimmed,
+                        x = worldX,
+                        y = worldY,
+                        widthDp = 310f,
+                        heightDp = 420f,
+                        colorHex = 0xFF141822L,
+                        type = ItemType.WEB_APP
+                    )
                 )
-            )
+            } else {
+                items.add(
+                    CanvasItem(
+                        id = UUID.randomUUID().toString(),
+                        title = "Nota",
+                        content = trimmed,
+                        x = worldX,
+                        y = worldY,
+                        widthDp = 210f,
+                        heightDp = 145f,
+                        colorHex = 0x00000000L,
+                        type = ItemType.NOTE
+                    )
+                )
+            }
             added = true
         }
         if (incomingImageUri != null) {
@@ -387,13 +457,13 @@ fun CanvasLauncherApp(
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
-                        title = "Snapshot Ricevuto",
+                        title = "Foto",
                         imagePath = savedPath,
                         x = worldX + 35f,
                         y = worldY + 35f,
-                        widthDp = 220f,
-                        heightDp = 180f,
-                        colorHex = defaultElementColor,
+                        widthDp = 190f,
+                        heightDp = 175f,
+                        colorHex = 0x00000000L,
                         type = ItemType.IMAGE_SNAPSHOT
                     )
                 )
@@ -406,14 +476,13 @@ fun CanvasLauncherApp(
                 items.add(
                     CanvasItem(
                         id = UUID.randomUUID().toString(),
-                        title = "Audio Ricevuto",
-                        content = "Memo audio condiviso",
+                        title = "Audio",
                         audioPath = savedPath,
                         x = worldX + 45f,
                         y = worldY + 45f,
-                        widthDp = 210f,
-                        heightDp = 120f,
-                        colorHex = defaultElementColor,
+                        widthDp = 115f,
+                        heightDp = 105f,
+                        colorHex = 0x00000000L,
                         type = ItemType.AUDIO_MEMO
                     )
                 )
@@ -449,13 +518,13 @@ fun CanvasLauncherApp(
         items.add(
             CanvasItem(
                 id = UUID.randomUUID().toString(),
-                title = "Sessione (${selectedObjects.size} elem.)",
+                title = "Sessione (${selectedObjects.size})",
                 content = summary,
                 x = avgX,
                 y = avgY,
-                widthDp = 220f,
-                heightDp = 160f,
-                colorHex = defaultElementColor,
+                widthDp = 115f,
+                heightDp = 110f,
+                colorHex = 0x00000000L,
                 type = ItemType.SESSION_GROUP,
                 sessionPackages = packages
             )
@@ -467,8 +536,11 @@ fun CanvasLauncherApp(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onGloballyPositioned { coords ->
+                viewportWidthPx = coords.size.width.toFloat().coerceAtLeast(1f)
+                viewportHeightPx = coords.size.height.toFloat().coerceAtLeast(1f)
+            }
             .background(Color(0xFF0C0E14).copy(alpha = backgroundAlpha))
-            // Pressione prolungata sullo sfondo vuoto -> Menu Sfondo
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = {
@@ -488,7 +560,6 @@ fun CanvasLauncherApp(
                     }
                 )
             }
-            // Mouse Fisico (Cursore + Tasto Destro)
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
@@ -514,7 +585,6 @@ fun CanvasLauncherApp(
                     }
                 }
             }
-            // Gestione Pan/Zoom, Cursore e Lazo
             .pointerInput(activeTool) {
                 if (activeTool == CanvasTool.PAN) {
                     detectTransformGestures { centroid, pan, zoom, _ ->
@@ -605,7 +675,7 @@ fun CanvasLauncherApp(
                 }
             }
     ) {
-        // --- GRIGLIA PUNTINATA ---
+        // Griglia puntinata leggera
         if (backgroundAlpha > 0.08f) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val step = 84f * zoomScale
@@ -644,289 +714,769 @@ fun CanvasLauncherApp(
             items.forEachIndexed { index, item ->
                 val isSelected = selectedIds.contains(item.id)
                 val isResizing = resizingItemId == item.id
-                val borderColor = when {
-                    isResizing -> Color(0xFF38BDF8)
-                    isSelected -> Color(0xFF60A5FA)
-                    else -> Color(0xFF334155)
+
+                // Calcolo Viewport Culling (finestra visibile nello schermo o fuori campo)
+                val screenLeft = item.x * zoomScale + cameraOffset.x
+                val screenTop = item.y * zoomScale + cameraOffset.y
+                val screenRight = screenLeft + item.widthDp * density.density * zoomScale
+                val screenBottom = screenTop + item.heightDp * density.density * zoomScale
+                val margin = 120f
+                val isVisibleInViewport =
+                    screenRight >= -margin &&
+                    screenLeft <= viewportWidthPx + margin &&
+                    screenBottom >= -margin &&
+                    screenTop <= viewportHeightPx + margin
+
+                val desktopLabelStyle = TextStyle(
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    shadow = Shadow(
+                        color = Color(0xDD000000),
+                        offset = Offset(1f, 2f),
+                        blurRadius = 4f
+                    )
+                )
+
+                val selectionModifier = if (isSelected || isResizing) {
+                    Modifier.border(
+                        width = 2.dp,
+                        color = if (isResizing) Color(0xFF38BDF8) else Color(0xFF60A5FA),
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                } else {
+                    Modifier
                 }
 
                 Box(
                     modifier = Modifier
                         .offset { IntOffset(item.x.roundToInt(), item.y.roundToInt()) }
                         .size(item.widthDp.dp, item.heightDp.dp)
+                        .then(selectionModifier)
                 ) {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .shadow(if (isSelected || isResizing) 12.dp else 4.dp, RoundedCornerShape(16.dp))
-                            .border(
-                                width = if (isSelected || isResizing) 2.5.dp else 1.dp,
-                                color = borderColor,
-                                shape = RoundedCornerShape(16.dp)
-                            )
-                            .combinedClickable(
-                                onClick = {
-                                    if (isResizing) {
-                                        resizingItemId = null
-                                        return@combinedClickable
-                                    }
-                                    if (activeTool == CanvasTool.SELECT) {
-                                        if (selectedIds.contains(item.id)) {
-                                            selectedIds.remove(item.id)
-                                        } else {
-                                            selectedIds.clear()
-                                            selectedIds.add(item.id)
-                                        }
-                                    } else {
-                                        when (item.type) {
-                                            ItemType.APP_SHORTCUT -> {
-                                                item.packageName?.let { pkg ->
-                                                    val appObj = appList.find { it.packageName == pkg }
-                                                    if (appObj != null) launchApp(context, appObj)
-                                                    else launchPackage(context, pkg)
-                                                }
-                                            }
-                                            ItemType.SYSTEM_SHORTCUT -> {
-                                                openSystemOrCustomShortcut(context, item)
-                                            }
-                                            ItemType.FILE_LINK -> {
-                                                openLinkedFile(context, item)
-                                            }
-                                            ItemType.AUDIO_MEMO -> {
-                                                toggleAudioPlayback(item)
-                                            }
-                                            ItemType.SESSION_GROUP -> {
-                                                if (item.sessionPackages.size == 1) {
-                                                    launchPackage(context, item.sessionPackages.first())
-                                                } else if (item.sessionPackages.isNotEmpty()) {
-                                                    activeSessionDialogItem = item
-                                                } else {
-                                                    editingItem = item
-                                                    editTitleText = item.title
-                                                    editContentText = item.content
-                                                    editColorHex = item.colorHex
-                                                }
-                                            }
-                                            ItemType.NOTE, ItemType.IMAGE_SNAPSHOT -> {
-                                                editingItem = item
-                                                editTitleText = item.title
-                                                editContentText = item.content
-                                                editColorHex = item.colorHex
-                                            }
-                                            ItemType.SYSTEM_WIDGET -> {
-                                            }
-                                        }
-                                    }
-                                },
-                                onLongClick = {
-                                    targetItemForMenu = item
-                                    val screenX = item.x * zoomScale + cameraOffset.x
-                                    val screenY = item.y * zoomScale + cameraOffset.y
-                                    contextMenuScreenPos = Offset(screenX, screenY)
-                                    showContextMenu = true
-                                }
-                            ),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isSelected) Color(0xFF1D355E) else Color(item.colorHex)
-                        ),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(10.dp)
-                        ) {
-                            // Badge Tipo Elemento
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color(item.type.accentHex).copy(alpha = 0.2f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = item.type.badgeLabel,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(item.type.accentHex)
+                    when (item.type) {
+                        // 1. FINESTRA APP LIVE (VirtualDisplay + Shizuku + Surface Detaching + Snapshot Riavvio)
+                        ItemType.APP_WINDOW -> {
+                            @Suppress("UNUSED_VARIABLE")
+                            val rev = windowSessionRevision
+                            val isSessionLive = VirtualDisplayWindowManager.hasActiveSession(item.id)
+
+                            LaunchedEffect(isVisibleInViewport, isSessionLive) {
+                                val session = VirtualDisplayWindowManager.getSession(item.id)
+                                if (session != null) {
+                                    VirtualDisplayWindowManager.updateSurfaceAttachment(
+                                        itemId = item.id,
+                                        surface = session.attachedSurface,
+                                        isVisibleOnScreen = isVisibleInViewport
                                     )
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(6.dp))
-
-                            when (item.type) {
-                                ItemType.SYSTEM_WIDGET -> {
-                                    val widgetInfo = remember(item.appWidgetId) {
-                                        if (item.appWidgetId != -1) appWidgetManager.getAppWidgetInfo(item.appWidgetId) else null
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .shadow(10.dp, RoundedCornerShape(14.dp))
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color(0xFF141822))
+                                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp))
+                            ) {
+                                // Barra titolo finestra con Indietro, IME, Ridimensiona e Chiudi
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(36.dp)
+                                        .background(Color(0xFF1E2433))
+                                        .padding(horizontal = 4.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { VirtualDisplayWindowManager.injectBackKey(item.id) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                            contentDescription = "Indietro",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
                                     }
-                                    if (widgetInfo != null) {
+
+                                    Text(
+                                        text = item.title,
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(horizontal = 4.dp)
+                                    )
+
+                                    // Toggle tastiera IME (locale dentro finestra vs schermo telefono)
+                                    IconButton(
+                                        onClick = {
+                                            val newFallback = !item.imeFallbackDisplay
+                                            items[index] = item.copy(imeFallbackDisplay = newFallback)
+                                            StorageManager.saveItems(context, items)
+                                            val session = VirtualDisplayWindowManager.getSession(item.id)
+                                            if (session != null) {
+                                                VirtualDisplayWindowManager.setDisplayImePolicy(
+                                                    session.displayId,
+                                                    if (newFallback) VirtualDisplayWindowManager.IME_POLICY_FALLBACK_DISPLAY
+                                                    else VirtualDisplayWindowManager.IME_POLICY_LOCAL
+                                                )
+                                            }
+                                            Toast.makeText(
+                                                context,
+                                                if (newFallback) "Tastiera sullo schermo principale"
+                                                else "Tastiera dentro la mini-finestra",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Keyboard,
+                                            contentDescription = "Policy Tastiera",
+                                            tint = if (item.imeFallbackDisplay) Color(0xFF94A3B8) else Color(0xFF38BDF8),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            resizingItemId = if (isResizing) null else item.id
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AspectRatio,
+                                            contentDescription = "Ridimensiona",
+                                            tint = if (isResizing) Color(0xFF38BDF8) else Color(0xFF94A3B8),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            VirtualDisplayWindowManager.closeSession(item.id)
+                                            items.removeAt(index)
+                                            StorageManager.saveItems(context, items)
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "Chiudi Finestra",
+                                            tint = Color(0xFFF87171),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+
+                                // Contenuto finestra: TextureView live se VirtualDisplay attivo,
+                                // altrimenti Screenshot salvato pre-riavvio con ripristino 1-tap
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    if (isSessionLive) {
+                                        var renderedW by remember { mutableFloatStateOf(1f) }
+                                        var renderedH by remember { mutableFloatStateOf(1f) }
+                                        var touchDownTime by remember { mutableLongStateOf(0L) }
+
                                         AndroidView(
                                             factory = { ctx ->
-                                                appWidgetHost.createView(ctx, item.appWidgetId, widgetInfo).apply {
-                                                    setAppWidget(item.appWidgetId, widgetInfo)
+                                                TextureView(ctx).apply {
+                                                    layoutParams = ViewGroup.LayoutParams(
+                                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                                    )
+                                                    VirtualDisplayWindowManager.getSession(item.id)?.textureView = this
+                                                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                                        override fun onSurfaceTextureAvailable(
+                                                            st: SurfaceTexture,
+                                                            w: Int,
+                                                            h: Int
+                                                        ) {
+                                                            val s = Surface(st)
+                                                            VirtualDisplayWindowManager.updateSurfaceAttachment(
+                                                                item.id,
+                                                                s,
+                                                                isVisibleInViewport
+                                                            )
+                                                        }
+
+                                                        override fun onSurfaceTextureSizeChanged(
+                                                            st: SurfaceTexture,
+                                                            w: Int,
+                                                            h: Int
+                                                        ) {
+                                                            VirtualDisplayWindowManager.resizeSession(item.id, w, h)
+                                                        }
+
+                                                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                                            VirtualDisplayWindowManager.updateSurfaceAttachment(
+                                                                item.id,
+                                                                null,
+                                                                false
+                                                            )
+                                                            return true
+                                                        }
+
+                                                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                                                    }
                                                 }
                                             },
                                             modifier = Modifier
                                                 .fillMaxSize()
-                                                .clip(RoundedCornerShape(10.dp))
+                                                .onGloballyPositioned { coords ->
+                                                    renderedW = coords.size.width.toFloat().coerceAtLeast(1f)
+                                                    renderedH = coords.size.height.toFloat().coerceAtLeast(1f)
+                                                }
+                                                .pointerInput(item.id) {
+                                                    awaitPointerEventScope {
+                                                        while (true) {
+                                                            val event = awaitPointerEvent()
+                                                            val change = event.changes.firstOrNull() ?: continue
+                                                            change.consume()
+                                                            when {
+                                                                change.pressed && !change.previousPressed -> {
+                                                                    touchDownTime = SystemClock.uptimeMillis()
+                                                                    VirtualDisplayWindowManager.injectMappedTouch(
+                                                                        item.id,
+                                                                        MotionEvent.ACTION_DOWN,
+                                                                        touchDownTime,
+                                                                        change.position.x,
+                                                                        change.position.y,
+                                                                        renderedW,
+                                                                        renderedH
+                                                                    )
+                                                                }
+                                                                change.pressed && change.previousPressed -> {
+                                                                    VirtualDisplayWindowManager.injectMappedTouch(
+                                                                        item.id,
+                                                                        MotionEvent.ACTION_MOVE,
+                                                                        touchDownTime,
+                                                                        change.position.x,
+                                                                        change.position.y,
+                                                                        renderedW,
+                                                                        renderedH
+                                                                    )
+                                                                }
+                                                                !change.pressed && change.previousPressed -> {
+                                                                    VirtualDisplayWindowManager.injectMappedTouch(
+                                                                        item.id,
+                                                                        MotionEvent.ACTION_UP,
+                                                                        touchDownTime,
+                                                                        change.position.x,
+                                                                        change.position.y,
+                                                                        renderedW,
+                                                                        renderedH
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                         )
                                     } else {
-                                        Text("Widget non disponibile", color = Color(0xFF94A3B8), fontSize = 12.sp)
-                                    }
-                                }
-
-                                ItemType.AUDIO_MEMO -> {
-                                    val isPlaying = playingAudioId == item.id
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxSize()
-                                    ) {
-                                        IconButton(
-                                            onClick = { toggleAudioPlayback(item) },
-                                            modifier = Modifier
-                                                .size(40.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(0xFFF43F5E))
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                                contentDescription = "Riproduci Audio",
-                                                tint = Color.White
+                                        // Stato dopo un riavvio: mostra lo screenshot catturato prima dello spegnimento
+                                        if (!item.lastSnapshotPath.isNullOrEmpty() && File(item.lastSnapshotPath).exists()) {
+                                            AsyncImage(
+                                                model = File(item.lastSnapshotPath),
+                                                contentDescription = "Ultimo stato ${item.title}",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
                                             )
                                         }
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = item.title,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = Color.White,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = if (isPlaying) "In riproduzione..." else "Tocca per ascoltare",
-                                                fontSize = 11.sp,
-                                                color = Color(0xFFCBD5E1)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                ItemType.FILE_LINK -> {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxSize()
-                                    ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(Color(0xFF2DD4BF).copy(alpha = 0.2f)),
+                                                .fillMaxSize()
+                                                .background(Color(0x880B0E17)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Description,
-                                                contentDescription = null,
-                                                tint = Color(0xFF2DD4BF)
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = item.title,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = Color.White,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "Apri file",
-                                                fontSize = 11.sp,
-                                                color = Color(0xFF94A3B8)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                else -> {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (item.type == ItemType.APP_SHORTCUT && item.packageName != null) {
-                                            val appIcon = remember(item.packageName, appList) {
-                                                appList.find { it.packageName == item.packageName }
-                                                    ?.icon?.toBitmap(width = 84, height = 84)?.asImageBitmap()
-                                            }
-                                            if (appIcon != null) {
-                                                Image(
-                                                    bitmap = appIcon,
-                                                    contentDescription = item.title,
-                                                    modifier = Modifier
-                                                        .size(32.dp)
-                                                        .padding(end = 8.dp)
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                                modifier = Modifier.padding(12.dp)
+                                            ) {
+                                                Text(
+                                                    text = "Stato salvato pre-riavvio",
+                                                    color = Color(0xFFCBD5E1),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Medium
                                                 )
+                                                Button(
+                                                    onClick = {
+                                                        val wPx = (item.widthDp * density.density).roundToInt()
+                                                        val hPx = ((item.heightDp - 36f) * density.density).roundToInt()
+                                                        VirtualDisplayWindowManager.launchAppInWindowOrFallback(
+                                                            context = context,
+                                                            item = item,
+                                                            widthPx = wPx,
+                                                            heightPx = hPx,
+                                                            onVirtualDisplayCreated = { windowSessionRevision++ },
+                                                            onFallbackFreeformLaunched = {}
+                                                        )
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = Color(0xFF2563EB)
+                                                    )
+                                                ) {
+                                                    Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = if (shizukuReady) "Riprendi su Tela" else "Apri in Freeform",
+                                                        fontSize = 12.sp
+                                                    )
+                                                }
                                             }
-                                        } else if (item.type == ItemType.SYSTEM_SHORTCUT) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.SettingsApplications,
-                                                contentDescription = null,
-                                                tint = Color(0xFFFB923C),
-                                                modifier = Modifier
-                                                    .size(26.dp)
-                                                    .padding(end = 8.dp)
-                                            )
-                                        }
-                                        Text(
-                                            text = item.title,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = Color.White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-
-                                    if (item.type == ItemType.IMAGE_SNAPSHOT && !item.imagePath.isNullOrEmpty()) {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        AsyncImage(
-                                            model = File(item.imagePath),
-                                            contentDescription = item.title,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .clip(RoundedCornerShape(10.dp))
-                                        )
-                                    } else if (item.content.isNotEmpty()) {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        // Testo scorrevole verticalmente dentro la nota
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .verticalScroll(rememberScrollState())
-                                        ) {
-                                            Text(
-                                                text = item.content,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = Color(0xFFE2E8F0)
-                                            )
                                         }
                                     }
                                 }
                             }
                         }
+
+                        // 2. FINESTRA WEB APP / BROWSER LIVE (con Viewport Culling + Snapshot Riavvio)
+                        ItemType.WEB_APP -> {
+                            val targetUrl = item.url ?: "https://www.google.com"
+
+                            LaunchedEffect(isVisibleInViewport) {
+                                val wv = VirtualDisplayWindowManager.activeWebViews[item.id]
+                                if (wv != null) {
+                                    if (isVisibleInViewport) wv.onResume() else wv.onPause()
+                                }
+                            }
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .shadow(10.dp, RoundedCornerShape(14.dp))
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color(0xFF141822))
+                                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp))
+                            ) {
+                                // Barra controlli WebView (Indietro, Avanti, Ricarica, Titolo, Ridimensiona, Chiudi)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(36.dp)
+                                        .background(Color(0xFF1E2433))
+                                        .padding(horizontal = 4.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = {
+                                            val wv = VirtualDisplayWindowManager.activeWebViews[item.id]
+                                            if (wv?.canGoBack() == true) wv.goBack()
+                                        },
+                                        modifier = Modifier.size(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                            contentDescription = "Indietro",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            val wv = VirtualDisplayWindowManager.activeWebViews[item.id]
+                                            if (wv?.canGoForward() == true) wv.goForward()
+                                        },
+                                        modifier = Modifier.size(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                            contentDescription = "Avanti",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            VirtualDisplayWindowManager.activeWebViews[item.id]?.reload()
+                                        },
+                                        modifier = Modifier.size(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Refresh,
+                                            contentDescription = "Ricarica",
+                                            tint = Color(0xFF94A3B8),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
+                                    Text(
+                                        text = item.title,
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(horizontal = 4.dp)
+                                    )
+
+                                    IconButton(
+                                        onClick = {
+                                            resizingItemId = if (isResizing) null else item.id
+                                        },
+                                        modifier = Modifier.size(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AspectRatio,
+                                            contentDescription = "Ridimensiona",
+                                            tint = if (isResizing) Color(0xFF38BDF8) else Color(0xFF94A3B8),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            VirtualDisplayWindowManager.activeWebViews.remove(item.id)?.destroy()
+                                            items.removeAt(index)
+                                            StorageManager.saveItems(context, items)
+                                        },
+                                        modifier = Modifier.size(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "Chiudi Web App",
+                                            tint = Color(0xFFF87171),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    // Mostra lo screenshot salvato sotto mentre la pagina ricarica dopo un riavvio
+                                    if (!item.lastSnapshotPath.isNullOrEmpty() && File(item.lastSnapshotPath).exists()) {
+                                        AsyncImage(
+                                            model = File(item.lastSnapshotPath),
+                                            contentDescription = null,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+
+                                    AndroidView(
+                                        factory = { ctx ->
+                                            VirtualDisplayWindowManager.activeWebViews.getOrPut(item.id) {
+                                                createConfiguredWebView(
+                                                    context = ctx,
+                                                    initialUrl = targetUrl,
+                                                    onUrlOrTitleUpdated = { newUrl, newTitle ->
+                                                        val idx = items.indexOfFirst { it.id == item.id }
+                                                        if (idx >= 0) {
+                                                            items[idx] = items[idx].copy(
+                                                                url = newUrl,
+                                                                title = newTitle.takeIf { it.isNotBlank() } ?: items[idx].title
+                                                            )
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+                        }
+
+                        // 3. WIDGET DI SISTEMA DIRETTAMENTE SULLA TELA (SENZA BOX)
+                        ItemType.SYSTEM_WIDGET -> {
+                            val widgetInfo = remember(item.appWidgetId) {
+                                if (item.appWidgetId != -1) appWidgetManager.getAppWidgetInfo(item.appWidgetId) else null
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .combinedClickable(
+                                        onClick = {},
+                                        onLongClick = {
+                                            targetItemForMenu = item
+                                            contextMenuScreenPos = Offset(screenLeft, screenTop)
+                                            showContextMenu = true
+                                        }
+                                    )
+                            ) {
+                                if (widgetInfo != null) {
+                                    AndroidView(
+                                        factory = { ctx ->
+                                            appWidgetHost.createView(ctx, item.appWidgetId, widgetInfo).apply {
+                                                setAppWidget(item.appWidgetId, widgetInfo)
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Text(
+                                        text = item.title,
+                                        style = desktopLabelStyle,
+                                        modifier = Modifier.align(Alignment.Center)
+                                    )
+                                }
+                            }
+                        }
+
+                        // 4. NOTA DIRETTAMENTE SULLA TELA (TESTO SCORREVOLE, SENZA BOX DI DEFAULT)
+                        ItemType.NOTE -> {
+                            val noteBg = if (item.colorHex == 0x00000000L) {
+                                Color.Transparent
+                            } else {
+                                Color(item.colorHex).copy(alpha = 0.72f)
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(noteBg)
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (activeTool == CanvasTool.SELECT) {
+                                                toggleItemSelection(selectedIds, item.id)
+                                            } else {
+                                                editingItem = item
+                                                editTitleText = item.title
+                                                editContentText = item.content
+                                                editColorHex = item.colorHex
+                                            }
+                                        },
+                                        onLongClick = {
+                                            targetItemForMenu = item
+                                            contextMenuScreenPos = Offset(screenLeft, screenTop)
+                                            showContextMenu = true
+                                        }
+                                    )
+                                    .padding(6.dp)
+                            ) {
+                                Text(
+                                    text = item.title,
+                                    style = desktopLabelStyle.copy(
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFFBBF24)
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    Text(
+                                        text = item.content,
+                                        style = desktopLabelStyle.copy(fontSize = 13.sp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // 5. FOTO / SNAPSHOT DIRETTAMENTE SULLA TELA CON NOME SOTTO (SENZA BOX)
+                        ItemType.IMAGE_SNAPSHOT -> {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (activeTool == CanvasTool.SELECT) {
+                                                toggleItemSelection(selectedIds, item.id)
+                                            } else {
+                                                editingItem = item
+                                                editTitleText = item.title
+                                                editContentText = item.content
+                                                editColorHex = item.colorHex
+                                            }
+                                        },
+                                        onLongClick = {
+                                            targetItemForMenu = item
+                                            contextMenuScreenPos = Offset(screenLeft, screenTop)
+                                            showContextMenu = true
+                                        }
+                                    )
+                            ) {
+                                if (!item.imagePath.isNullOrEmpty()) {
+                                    AsyncImage(
+                                        model = File(item.imagePath),
+                                        contentDescription = item.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                    )
+                                }
+                                Text(
+                                    text = item.title,
+                                    style = desktopLabelStyle,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                        }
+
+                        // 6. ICONE DESKTOP PURE SENZA BOX (APP, SCORCIATOIE, FILE, AUDIO, SESSIONI)
+                        else -> {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (activeTool == CanvasTool.SELECT) {
+                                                toggleItemSelection(selectedIds, item.id)
+                                            } else {
+                                                when (item.type) {
+                                                    ItemType.APP_SHORTCUT -> {
+                                                        item.packageName?.let { pkg ->
+                                                            val appObj = appList.find { it.packageName == pkg }
+                                                            if (appObj != null) launchApp(context, appObj)
+                                                            else launchPackage(context, pkg)
+                                                        }
+                                                    }
+                                                    ItemType.SYSTEM_SHORTCUT -> openSystemOrCustomShortcut(context, item)
+                                                    ItemType.FILE_LINK -> openLinkedFile(context, item)
+                                                    ItemType.AUDIO_MEMO -> toggleAudioPlayback(item)
+                                                    ItemType.SESSION_GROUP -> {
+                                                        if (item.sessionPackages.size == 1) {
+                                                            launchPackage(context, item.sessionPackages.first())
+                                                        } else if (item.sessionPackages.isNotEmpty()) {
+                                                            activeSessionDialogItem = item
+                                                        }
+                                                    }
+                                                    else -> {}
+                                                }
+                                            }
+                                        },
+                                        onLongClick = {
+                                            targetItemForMenu = item
+                                            contextMenuScreenPos = Offset(screenLeft, screenTop)
+                                            showContextMenu = true
+                                        }
+                                    )
+                                    .padding(4.dp)
+                            ) {
+                                when (item.type) {
+                                    ItemType.APP_SHORTCUT -> {
+                                        val appIcon = remember(item.packageName, appList) {
+                                            appList.find { it.packageName == item.packageName }
+                                                ?.icon?.toBitmap(width = 120, height = 120)?.asImageBitmap()
+                                        }
+                                        if (appIcon != null) {
+                                            Image(
+                                                bitmap = appIcon,
+                                                contentDescription = item.title,
+                                                modifier = Modifier.size(56.dp)
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Apps,
+                                                contentDescription = item.title,
+                                                tint = Color(0xFF38BDF8),
+                                                modifier = Modifier.size(52.dp)
+                                            )
+                                        }
+                                    }
+
+                                    ItemType.SYSTEM_SHORTCUT -> {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(52.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xCC1E293B)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.SettingsApplications,
+                                                contentDescription = item.title,
+                                                tint = Color(0xFFFB923C),
+                                                modifier = Modifier.size(30.dp)
+                                            )
+                                        }
+                                    }
+
+                                    ItemType.FILE_LINK -> {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(52.dp)
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(Color(0xCC1E293B)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Description,
+                                                contentDescription = item.title,
+                                                tint = Color(0xFF2DD4BF),
+                                                modifier = Modifier.size(30.dp)
+                                            )
+                                        }
+                                    }
+
+                                    ItemType.AUDIO_MEMO -> {
+                                        val isPlaying = playingAudioId == item.id
+                                        Box(
+                                            modifier = Modifier
+                                                .size(52.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFF43F5E)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                                contentDescription = item.title,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(30.dp)
+                                            )
+                                        }
+                                    }
+
+                                    ItemType.SESSION_GROUP -> {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(52.dp)
+                                                .clip(RoundedCornerShape(16.dp))
+                                                .background(Color(0xCC164E3F)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Workspaces,
+                                                contentDescription = item.title,
+                                                tint = Color(0xFF34D399),
+                                                modifier = Modifier.size(30.dp)
+                                            )
+                                        }
+                                    }
+
+                                    else -> {}
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                Text(
+                                    text = item.title,
+                                    style = desktopLabelStyle,
+                                    maxLines = 2,
+                                    textAlign = TextAlign.Center,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                     }
 
-                    // --- 4 MANIGLIE DI RIDIMENSIONAMENTO SUGLI ANGOLI ---
+                    // --- 4 MANIGLIE DI RIDIMENSIONAMENTO SUGLI ANGOLI PER QUALSIASI ELEMENTO/FINESTRA ---
                     if (isResizing) {
-                        val minW = 130f
-                        val minH = 95f
+                        val minW = if (item.type == ItemType.APP_WINDOW || item.type == ItemType.WEB_APP) 220f else 80f
+                        val minH = if (item.type == ItemType.APP_WINDOW || item.type == ItemType.WEB_APP) 240f else 80f
 
-                        // Angolo In Alto a Sinistra
                         ResizeCornerHandle(
                             alignment = Alignment.TopStart,
                             onDragDelta = { dx, dy ->
@@ -947,7 +1497,6 @@ fun CanvasLauncherApp(
                             onDragEnd = { StorageManager.saveItems(context, items) }
                         )
 
-                        // Angolo In Alto a Destra
                         ResizeCornerHandle(
                             alignment = Alignment.TopEnd,
                             onDragDelta = { dx, dy ->
@@ -966,7 +1515,6 @@ fun CanvasLauncherApp(
                             onDragEnd = { StorageManager.saveItems(context, items) }
                         )
 
-                        // Angolo In Basso a Sinistra
                         ResizeCornerHandle(
                             alignment = Alignment.BottomStart,
                             onDragDelta = { dx, dy ->
@@ -985,7 +1533,6 @@ fun CanvasLauncherApp(
                             onDragEnd = { StorageManager.saveItems(context, items) }
                         )
 
-                        // Angolo In Basso a Destra
                         ResizeCornerHandle(
                             alignment = Alignment.BottomEnd,
                             onDragDelta = { dx, dy ->
@@ -1004,7 +1551,7 @@ fun CanvasLauncherApp(
             }
         }
 
-        // --- TRACCIATO LAZO ---
+        // Tracciato Lazo
         if (lassoPoints.size > 1) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val path = Path().apply {
@@ -1019,7 +1566,7 @@ fun CanvasLauncherApp(
             }
         }
 
-        // --- BARRA DI STATO SUPERIORE (HUD) ---
+        // HUD superiore
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -1031,7 +1578,7 @@ fun CanvasLauncherApp(
         ) {
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = Color(0xCC161922)
+                color = Color(0xB8161922)
             ) {
                 val posX = (-cameraOffset.x / zoomScale).roundToInt()
                 val posY = (-cameraOffset.y / zoomScale).roundToInt()
@@ -1106,7 +1653,7 @@ fun CanvasLauncherApp(
             }
         }
 
-        // --- CURSORE VISIVO ---
+        // Cursore Visivo
         if (activeTool != CanvasTool.PAN) {
             Canvas(
                 modifier = Modifier
@@ -1125,7 +1672,7 @@ fun CanvasLauncherApp(
             }
         }
 
-        // --- BARRA STRUMENTI IN BASSO ---
+        // Barra strumenti inferiore
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1176,12 +1723,18 @@ fun CanvasLauncherApp(
                     onClick = { showAppDrawer = true }
                 )
                 ActionPillButton(
+                    icon = Icons.Rounded.Public,
+                    label = "Web",
+                    containerColor = Color(0xFF0D9488),
+                    onClick = { showWebAppDialog = true }
+                )
+                ActionPillButton(
                     icon = Icons.Rounded.NoteAdd,
                     label = "Nota",
                     containerColor = Color(0xFF1E293B),
                     onClick = {
-                        val worldX = (-cameraOffset.x + 210f) / zoomScale
-                        val worldY = (-cameraOffset.y + 330f) / zoomScale
+                        val worldX = (-cameraOffset.x + 190f) / zoomScale
+                        val worldY = (-cameraOffset.y + 300f) / zoomScale
                         items.add(
                             CanvasItem(
                                 id = UUID.randomUUID().toString(),
@@ -1189,7 +1742,9 @@ fun CanvasLauncherApp(
                                 content = "Tocca per scrivere...",
                                 x = worldX,
                                 y = worldY,
-                                colorHex = defaultElementColor,
+                                widthDp = 210f,
+                                heightDp = 140f,
+                                colorHex = 0x00000000L,
                                 type = ItemType.NOTE
                             )
                         )
@@ -1234,7 +1789,7 @@ fun CanvasLauncherApp(
             }
         }
 
-        // --- MENU CONTESTUALE SEPARATO: ELEMENTI vs SFONDO VUOTO ---
+        // --- MENU CONTESTUALE SEPARATO: ELEMENTO vs SFONDO VUOTO ---
         DropdownMenu(
             expanded = showContextMenu,
             onDismissRequest = { showContextMenu = false },
@@ -1244,20 +1799,35 @@ fun CanvasLauncherApp(
             }
         ) {
             if (targetItemForMenu != null) {
-                // MENU DEDICATO ALL'ELEMENTO SELEZIONATO
                 val item = targetItemForMenu!!
 
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Rounded.Edit, null, tint = Color.White) },
-                    text = { Text("Modifica Scheda", color = Color.White) },
-                    onClick = {
-                        editingItem = item
-                        editTitleText = item.title
-                        editContentText = item.content
-                        editColorHex = item.colorHex
-                        showContextMenu = false
-                    }
-                )
+                if (item.type == ItemType.APP_SHORTCUT && item.packageName != null) {
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Rounded.PictureInPictureAlt, null, tint = Color(0xFF38BDF8)) },
+                        text = { Text("Apri in Finestra sulla Tela", color = Color(0xFF38BDF8)) },
+                        onClick = {
+                            val appObj = appList.find { it.packageName == item.packageName }
+                            if (appObj != null) {
+                                openAppAsCanvasWindow(appObj, item.x + 40f, item.y + 40f)
+                            }
+                            showContextMenu = false
+                        }
+                    )
+                }
+
+                if (item.type != ItemType.APP_WINDOW && item.type != ItemType.WEB_APP && item.type != ItemType.SYSTEM_WIDGET) {
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Rounded.Edit, null, tint = Color.White) },
+                        text = { Text("Modifica Nome / Testo", color = Color.White) },
+                        onClick = {
+                            editingItem = item
+                            editTitleText = item.title
+                            editContentText = item.content
+                            editColorHex = item.colorHex
+                            showContextMenu = false
+                        }
+                    )
+                }
 
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.AspectRatio, null, tint = Color(0xFF38BDF8)) },
@@ -1281,17 +1851,15 @@ fun CanvasLauncherApp(
 
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Delete, null, tint = Color(0xFFF87171)) },
-                    text = { Text("Elimina Elemento", color = Color(0xFFF87171)) },
+                    text = { Text("Elimina", color = Color(0xFFF87171)) },
                     onClick = {
                         if (selectedIds.contains(item.id) && selectedIds.size > 1) {
-                            items.filter { selectedIds.contains(it.id) && it.appWidgetId != -1 }
-                                .forEach { appWidgetHost.deleteAppWidgetId(it.appWidgetId) }
+                            items.filter { selectedIds.contains(it.id) }
+                                .forEach { cleanupItemResources(it, appWidgetHost) }
                             items.removeAll { selectedIds.contains(it.id) }
                             selectedIds.clear()
                         } else {
-                            if (item.appWidgetId != -1) {
-                                appWidgetHost.deleteAppWidgetId(item.appWidgetId)
-                            }
+                            cleanupItemResources(item, appWidgetHost)
                             items.remove(item)
                             selectedIds.remove(item.id)
                         }
@@ -1304,6 +1872,15 @@ fun CanvasLauncherApp(
                 // MENU DEDICATO ALLO SFONDO VUOTO
                 val worldX = (contextMenuScreenPos.x - cameraOffset.x) / zoomScale
                 val worldY = (contextMenuScreenPos.y - cameraOffset.y) / zoomScale
+
+                DropdownMenuItem(
+                    leadingIcon = { Icon(Icons.Rounded.Public, null, tint = Color(0xFF34D399)) },
+                    text = { Text("Aggiungi Web App / Sito", color = Color.White) },
+                    onClick = {
+                        showContextMenu = false
+                        showWebAppDialog = true
+                    }
+                )
 
                 DropdownMenuItem(
                     leadingIcon = { Icon(Icons.Rounded.Widgets, null, tint = Color(0xFFF472B6)) },
@@ -1334,7 +1911,9 @@ fun CanvasLauncherApp(
                                 content = "Tocca per scrivere...",
                                 x = worldX,
                                 y = worldY,
-                                colorHex = defaultElementColor,
+                                widthDp = 210f,
+                                heightDp = 140f,
+                                colorHex = 0x00000000L,
                                 type = ItemType.NOTE
                             )
                         )
@@ -1390,7 +1969,40 @@ fun CanvasLauncherApp(
             }
         }
 
-        // --- SCELTA FOTO: GALLERIA O SCATTO AL VOLO ---
+        // --- DIALOG AGGIUNGI WEB APP ---
+        if (showWebAppDialog) {
+            WebAppLauncherDialog(
+                onAddWebApp = { title, rawUrl ->
+                    val normalizedUrl = if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+                        rawUrl
+                    } else if (rawUrl.contains(".") && !rawUrl.contains(" ")) {
+                        "https://$rawUrl"
+                    } else {
+                        "https://www.google.com/search?q=${Uri.encode(rawUrl)}"
+                    }
+                    val worldX = (-cameraOffset.x + 80f) / zoomScale
+                    val worldY = (-cameraOffset.y + 180f) / zoomScale
+                    items.add(
+                        CanvasItem(
+                            id = UUID.randomUUID().toString(),
+                            title = title.ifBlank { normalizedUrl.removePrefix("https://").take(22) },
+                            url = normalizedUrl,
+                            x = worldX,
+                            y = worldY,
+                            widthDp = 315f,
+                            heightDp = 430f,
+                            colorHex = 0xFF141822L,
+                            type = ItemType.WEB_APP
+                        )
+                    )
+                    StorageManager.saveItems(context, items)
+                    showWebAppDialog = false
+                },
+                onDismiss = { showWebAppDialog = false }
+            )
+        }
+
+        // --- SCELTA FOTO ---
         if (showPhotoChoiceDialog) {
             AlertDialog(
                 onDismissRequest = { showPhotoChoiceDialog = false },
@@ -1432,23 +2044,22 @@ fun CanvasLauncherApp(
             )
         }
 
-        // --- FINESTRA REGISTRAZIONE MEMO VOCALE O AUDIO DA ARCHIVIO ---
+        // --- DIALOG AUDIO ---
         if (showAudioDialog) {
             AudioRecorderDialog(
                 onAudioSaved = { filePath, label ->
-                    val worldX = (-cameraOffset.x + 200f) / zoomScale
-                    val worldY = (-cameraOffset.y + 320f) / zoomScale
+                    val worldX = (-cameraOffset.x + 180f) / zoomScale
+                    val worldY = (-cameraOffset.y + 300f) / zoomScale
                     items.add(
                         CanvasItem(
                             id = UUID.randomUUID().toString(),
                             title = label,
-                            content = "Memo vocale registrato",
                             audioPath = filePath,
                             x = worldX,
                             y = worldY,
-                            widthDp = 210f,
-                            heightDp = 120f,
-                            colorHex = defaultElementColor,
+                            widthDp = 115f,
+                            heightDp = 105f,
+                            colorHex = 0x00000000L,
                             type = ItemType.AUDIO_MEMO
                         )
                     )
@@ -1463,52 +2074,53 @@ fun CanvasLauncherApp(
             )
         }
 
-        // --- FINESTRA MODIFICA SCHEDA ---
+        // --- FINESTRA MODIFICA ---
         if (editingItem != null) {
             AlertDialog(
                 onDismissRequest = { editingItem = null },
                 containerColor = Color(0xFF181B24),
                 titleContentColor = Color.White,
-                title = { Text("Modifica Scheda", fontWeight = FontWeight.Bold) },
+                title = { Text("Modifica Elemento", fontWeight = FontWeight.Bold) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedTextField(
                             value = editTitleText,
                             onValueChange = { editTitleText = it },
-                            label = { Text("Titolo") },
+                            label = { Text("Nome") },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White
                             )
                         )
-                        OutlinedTextField(
-                            value = editContentText,
-                            onValueChange = { editContentText = it },
-                            label = { Text("Contenuto / Appunti") },
-                            minLines = 4,
-                            maxLines = 8,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White
-                            )
-                        )
-
-                        Text("Colore scheda", color = Color(0xFF94A3B8), fontSize = 12.sp)
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ElementColorOptions.forEach { (hex, _) ->
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(hex))
-                                        .border(
-                                            width = if (editColorHex == hex) 2.5.dp else 1.dp,
-                                            color = if (editColorHex == hex) Color.White else Color(0xFF475569),
-                                            shape = CircleShape
-                                        )
-                                        .clickable { editColorHex = hex }
+                        if (editingItem?.type == ItemType.NOTE) {
+                            OutlinedTextField(
+                                value = editContentText,
+                                onValueChange = { editContentText = it },
+                                label = { Text("Testo Nota") },
+                                minLines = 4,
+                                maxLines = 8,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
                                 )
+                            )
+                            Text("Sfondo nota (opzionale)", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                ElementColorOptions.forEach { (hex, _) ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .clip(CircleShape)
+                                            .background(if (hex == 0x00000000L) Color(0xFF0F172A) else Color(hex))
+                                            .border(
+                                                width = if (editColorHex == hex) 2.5.dp else 1.dp,
+                                                color = if (editColorHex == hex) Color.White else Color(0xFF475569),
+                                                shape = CircleShape
+                                            )
+                                            .clickable { editColorHex = hex }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1537,7 +2149,7 @@ fun CanvasLauncherApp(
             )
         }
 
-        // --- FINESTRA SESSIONE DI LAVORO ---
+        // --- DIALOG SESSIONE ---
         if (activeSessionDialogItem != null) {
             val session = activeSessionDialogItem!!
             AlertDialog(
@@ -1547,11 +2159,6 @@ fun CanvasLauncherApp(
                 title = { Text(session.title, fontWeight = FontWeight.Bold) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            "App raggruppate in questa sessione:",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 13.sp
-                        )
                         session.sessionPackages.forEach { pkg ->
                             val label = appList.find { it.packageName == pkg }?.label ?: pkg
                             Button(
@@ -1578,6 +2185,8 @@ fun CanvasLauncherApp(
         // --- IMPOSTAZIONI LAUNCHER ---
         if (showSettingsDialog) {
             LauncherSettingsDialog(
+                shizukuReady = shizukuReady,
+                onRequestShizukuPermission = onRequestShizukuPermission,
                 backgroundAlpha = backgroundAlpha,
                 onBackgroundAlphaChange = { newAlpha ->
                     backgroundAlpha = newAlpha
@@ -1600,46 +2209,32 @@ fun CanvasLauncherApp(
                     StorageManager.setShowSelfInDrawer(context, newShow)
                     onShowSelfInDrawerChanged(newShow)
                 },
-                defaultElementColor = defaultElementColor,
-                onDefaultElementColorChange = { newColor ->
-                    defaultElementColor = newColor
-                    StorageManager.setDefaultElementColor(context, newColor)
-                },
-                onApplyColorToAllExisting = { colorToApply ->
-                    for (i in items.indices) {
-                        items[i] = items[i].copy(colorHex = colorToApply)
-                    }
-                    StorageManager.saveItems(context, items)
-                    Toast.makeText(context, "Colore applicato a tutti gli elementi", Toast.LENGTH_SHORT).show()
-                },
                 onAddSystemShortcut = { preset ->
-                    val worldX = (-cameraOffset.x + 210f) / zoomScale
-                    val worldY = (-cameraOffset.y + 330f) / zoomScale
+                    val worldX = (-cameraOffset.x + 190f) / zoomScale
+                    val worldY = (-cameraOffset.y + 300f) / zoomScale
                     items.add(
                         CanvasItem(
                             id = UUID.randomUUID().toString(),
                             title = preset.title,
-                            content = preset.description,
                             shortcutAction = preset.action,
                             x = worldX,
                             y = worldY,
-                            widthDp = 175f,
-                            heightDp = 110f,
-                            colorHex = defaultElementColor,
+                            widthDp = 105f,
+                            heightDp = 100f,
+                            colorHex = 0x00000000L,
                             type = ItemType.SYSTEM_SHORTCUT
                         )
                     )
                     StorageManager.saveItems(context, items)
-                    Toast.makeText(context, "Scorciatoia ${preset.title} aggiunta", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "${preset.title} aggiunta", Toast.LENGTH_SHORT).show()
                 },
                 onChangeWallpaper = { openSystemWallpaperChooser() },
                 onAddSystemWidget = { onRequestPickSystemWidget() },
                 onRestoreGuideNote = {
-                    val worldX = (-cameraOffset.x + 120f) / zoomScale
-                    val worldY = (-cameraOffset.y + 200f) / zoomScale
+                    val worldX = (-cameraOffset.x + 110f) / zoomScale
+                    val worldY = (-cameraOffset.y + 190f) / zoomScale
                     items.add(StorageManager.createDefaultGuideNote(worldX, worldY))
                     StorageManager.saveItems(context, items)
-                    Toast.makeText(context, "Nota Guida aggiunta alla tela", Toast.LENGTH_SHORT).show()
                 },
                 onDismiss = { showSettingsDialog = false }
             )
@@ -1654,36 +2249,180 @@ fun CanvasLauncherApp(
                     showAppDrawer = false
                     launchApp(context, app)
                 },
+                onOpenAppInCanvasWindow = { app ->
+                    showAppDrawer = false
+                    openAppAsCanvasWindow(app)
+                },
                 onAddAppsToCanvas = { selectedApps ->
-                    val baseWorldX = (-cameraOffset.x + 160f) / zoomScale
-                    val baseWorldY = (-cameraOffset.y + 280f) / zoomScale
+                    val baseWorldX = (-cameraOffset.x + 120f) / zoomScale
+                    val baseWorldY = (-cameraOffset.y + 240f) / zoomScale
                     selectedApps.forEachIndexed { idx, app ->
-                        val col = idx % 2
-                        val row = idx / 2
+                        val col = idx % 3
+                        val row = idx / 3
                         items.add(
                             CanvasItem(
                                 id = UUID.randomUUID().toString(),
                                 title = app.label,
                                 packageName = app.packageName,
-                                x = baseWorldX + col * 460f,
+                                x = baseWorldX + col * 310f,
                                 y = baseWorldY + row * 310f,
-                                widthDp = 160f,
-                                heightDp = 100f,
+                                widthDp = 105f,
+                                heightDp = 105f,
                                 type = ItemType.APP_SHORTCUT,
-                                colorHex = defaultElementColor
+                                colorHex = 0x00000000L
                             )
                         )
                     }
                     StorageManager.saveItems(context, items)
-                    val msg = if (selectedApps.size == 1) "${selectedApps.first().label} aggiunta"
-                    else "${selectedApps.size} app aggiunte alla tela"
-                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                     showAppDrawer = false
                 },
                 onDismiss = { showAppDrawer = false }
             )
         }
     }
+}
+
+private fun cleanupItemResources(item: CanvasItem, appWidgetHost: AppWidgetHost) {
+    if (item.appWidgetId != -1) {
+        try {
+            appWidgetHost.deleteAppWidgetId(item.appWidgetId)
+        } catch (_: Exception) {
+        }
+    }
+    if (item.type == ItemType.APP_WINDOW) {
+        VirtualDisplayWindowManager.closeSession(item.id)
+    }
+    if (item.type == ItemType.WEB_APP) {
+        VirtualDisplayWindowManager.activeWebViews.remove(item.id)?.destroy()
+    }
+}
+
+private fun toggleItemSelection(selectedIds: MutableList<String>, id: String) {
+    if (selectedIds.contains(id)) selectedIds.remove(id)
+    else {
+        selectedIds.clear()
+        selectedIds.add(id)
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+private fun createConfiguredWebView(
+    context: Context,
+    initialUrl: String,
+    onUrlOrTitleUpdated: (String, String) -> Unit
+): WebView {
+    return WebView(context).apply {
+        layoutParams = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+        settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            cacheMode = WebSettings.LOAD_DEFAULT
+        }
+        webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                if (url != null) {
+                    onUrlOrTitleUpdated(url, view?.title ?: "")
+                }
+            }
+        }
+        webChromeClient = object : WebChromeClient() {
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                super.onReceivedTitle(view, title)
+                val currUrl = view?.url
+                if (!currUrl.isNullOrBlank() && !title.isNullOrBlank()) {
+                    onUrlOrTitleUpdated(currUrl, title)
+                }
+            }
+        }
+        loadUrl(initialUrl)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WebAppLauncherDialog(
+    onAddWebApp: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("https://") }
+
+    val quickSites = listOf(
+        "YouTube" to "https://m.youtube.com",
+        "ChatGPT" to "https://chatgpt.com",
+        "Google Docs" to "https://docs.google.com",
+        "Wikipedia" to "https://it.m.wikipedia.org",
+        "Google" to "https://www.google.com"
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF181B24),
+        titleContentColor = Color.White,
+        title = { Text("Apri Web App sulla Tela", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("URL o ricerca web") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    )
+                )
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Nome finestra (opzionale)") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    )
+                )
+                Text("Web App rapide:", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickSites.forEach { (presetName, presetUrl) ->
+                        AssistChip(
+                            onClick = { onAddWebApp(presetName, presetUrl) },
+                            label = { Text(presetName, color = Color.White, fontSize = 12.sp) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (url.isNotBlank() && url != "https://") {
+                        onAddWebApp(title, url.trim())
+                    }
+                }
+            ) {
+                Text("Apri sulla Tela")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Annulla", color = Color(0xFF94A3B8))
+            }
+        }
+    )
 }
 
 @Composable
@@ -1819,9 +2558,7 @@ private fun AudioRecorderDialog(
     }
 
     AlertDialog(
-        onDismissRequest = {
-            if (!isRecording) onDismiss()
-        },
+        onDismissRequest = { if (!isRecording) onDismiss() },
         containerColor = Color(0xFF181B24),
         titleContentColor = Color.White,
         title = { Text("Audio & Memo Vocale", fontWeight = FontWeight.Bold) },
@@ -1830,7 +2567,7 @@ private fun AudioRecorderDialog(
                 OutlinedTextField(
                     value = memoLabel,
                     onValueChange = { memoLabel = it },
-                    label = { Text("Titolo memo") },
+                    label = { Text("Nome memo") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White,
